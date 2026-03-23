@@ -16,6 +16,7 @@ import time
 import tempfile
 import os
 from typing import Optional
+from datetime import datetime
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.styles import Style
@@ -127,6 +128,24 @@ curl:
 hashcat:
   args: hashfile (path or raw hash), hash_type, wordlist, attack_mode
 
+whatweb:
+  args: target (URL), mode (aggressive/verbose/quiet/custom)
+
+wafw00f:
+  args: target (URL)
+
+sslscan:
+  args: target (host:port)
+
+onesixtyone:
+  args: target (IP)
+
+dnsrecon:
+  args: target (domain), mode (std/brt/axfr/srv/full)
+
+nuclei:
+  args: target (URL), mode (quick/full/cves/exposures/logins)
+
 privesc: READ-ONLY Linux privilege escalation ENUMERATION (NOT an attack)
   This tool only runs safe read commands: find, sudo -l, getcap, cat, ls
   It does NOT exploit anything — just lists what could potentially be exploited
@@ -199,11 +218,94 @@ class Orchestrator:
             "sslscan":    SslscanTool(),
             "onesixtyone":OnesixtyoneTool(),
             "dnsrecon":   DnsreconTool(),
-            "onesixtyone":OnesixtyoneTool(),
             "nuclei":     NucleiTool(),
             "privesc":    PrivescTool(),
         }
         self._history: list[dict] = []
+
+    # ── Chat Methods ───────────────────────────────────────────────────────────
+
+    def _chat_about_vulnerability(self, user_input: str) -> None:
+        """Handle vulnerability questions and general security chat."""
+        
+        chat_prompt = f"""You are Kernox AI, a helpful penetration testing assistant. 
+The user is asking: {user_input}
+
+Current session context:
+- Target: {', '.join(self._state.hosts.keys()) or 'No targets scanned yet'}
+- Tools run: {len(self._state.get_tool_results())}
+- Vulnerabilities found: {len(self._state.get_ai_insights())}
+
+If the user is asking about a vulnerability, provide:
+1. What it is (simple explanation)
+2. How to exploit (ethically, for testing)
+3. How to fix it
+4. References (CVE numbers, etc.)
+
+If asking about tools, explain their purpose and typical usage.
+If asking for recommendations, suggest next steps based on current findings.
+
+Keep responses clear and actionable. Use markdown for formatting.
+If the user asks about something unrelated to security testing, politely decline.
+"""
+        
+        with Live(Spinner("dots", text="[cyan]AI thinking...[/cyan]"), refresh_per_second=10):
+            response = self._ai.chat(
+                messages=[{"role": "user", "content": user_input}],
+                system=chat_prompt,
+            )
+        
+        console.print(Panel(
+            Markdown(response),
+            title="[cyan]Kernox AI Assistant[/cyan]",
+            border_style="cyan",
+            box=box.ROUNDED,
+        ))
+        
+        self._history.append({"role": "user", "content": user_input})
+        self._history.append({"role": "assistant", "content": response})
+
+    def _explain_findings_summary(self) -> None:
+        """Get AI to explain the current findings and suggest next steps."""
+        if not self._state.get_tool_results():
+            console.print("[yellow]No findings to explain yet. Run some scans first.[/yellow]")
+            return
+        
+        findings_summary = []
+        for result in self._state.get_tool_results()[-5:]:
+            findings_summary.append(f"- {result.tool} on {result.target}")
+        
+        insights = self._state.get_ai_insights()
+        if insights:
+            findings_summary.append("\nVulnerabilities found:")
+            for insight in insights[:3]:
+                findings_summary.append(f"  - {insight.vulnerability} ({insight.severity})")
+        
+        prompt = f"""Based on the following findings from a penetration test:
+
+{chr(10).join(findings_summary)}
+
+Please provide:
+1. A summary of the most critical issues found
+2. Recommended next steps for further enumeration
+3. Any potential attack paths to explore
+4. General advice for this assessment
+
+Keep the response concise and actionable.
+"""
+        
+        with Live(Spinner("dots", text="[cyan]Analyzing findings...[/cyan]"), refresh_per_second=10):
+            response = self._ai.chat(
+                messages=[{"role": "user", "content": prompt}],
+                system="You are a senior penetration tester providing expert analysis."
+            )
+        
+        console.print(Panel(
+            Markdown(response),
+            title="[cyan]Findings Analysis[/cyan]",
+            border_style="cyan",
+            box=box.ROUNDED,
+        ))
 
     # ── Main REPL ─────────────────────────────────────────────────────────────
 
@@ -256,29 +358,60 @@ class Orchestrator:
                 state = "[green]ON[/green]" if current else "[yellow]OFF[/yellow]"
                 console.print(f"Raw output is currently {state}. Type [bold]raw on[/bold] or [bold]raw off[/bold] to toggle.")
                 continue
+            elif cmd.startswith("ask "):
+                question = user_input[4:].strip()
+                if not question:
+                    question = Prompt.ask("[cyan]What would you like to know?[/cyan]")
+                self._chat_about_vulnerability(question)
+                continue
+            elif cmd == "explain":
+                self._explain_findings_summary()
+                continue
 
             self._process(user_input)
 
     # ── Process pipeline ──────────────────────────────────────────────────────
 
     def _process(self, user_input: str) -> None:
+        # Check if this is a chat/query about vulnerabilities
+        chat_keywords = ["what is", "how to", "explain", "tell me about", "what does", 
+                        "how does", "why is", "can you", "help me understand", 
+                        "difference between", "compare", "recommend"]
+        
+        is_chat_query = any(user_input.lower().startswith(kw) for kw in chat_keywords) or \
+                        "?" in user_input and len(user_input.split()) < 15
+        
+        if is_chat_query and not any(cmd in user_input.lower() for cmd in ["scan", "run", "enumerate", "fuzz", "crack"]):
+            self._chat_about_vulnerability(user_input)
+            return
+        
         self._history.append({"role": "user", "content": user_input})
+        
+        # Build context from session state
+        context = f"""
+Current session context:
+- Targets scanned: {', '.join(self._state.hosts.keys()) or 'None'}
+- Open ports found: {sum(len(h.ports) for h in self._state.hosts.values())}
+- Vulnerabilities: {len(self._state.get_ai_insights())}
+- Tools run: {len(self._state.get_tool_results())}
 
-        # AI plan
+User request: {user_input}
+
+Based on the context, create a plan to help the user.
+"""
+        
         with Live(Spinner("dots", text="[cyan]AI thinking...[/cyan]"), refresh_per_second=10):
             ai_response = self._ai.chat(
                 messages=self._trimmed_history(),
-                system=SYSTEM_PROMPT,
+                system=SYSTEM_PROMPT + "\n\n" + context,
             )
         self._history.append({"role": "assistant", "content": ai_response})
 
         plan = _extract_json_plan(ai_response)
         if plan is None:
-            # No JSON plan found — show as plain text
             console.print(Panel(Markdown(ai_response), title="[cyan]Kernox AI[/cyan]", border_style="cyan"))
             return
 
-        # Show only the human message — NOT the raw JSON
         if plan.get("message"):
             console.print(Panel(
                 plan["message"],
@@ -286,7 +419,6 @@ class Orchestrator:
                 border_style="cyan",
             ))
         elif plan.get("analysis"):
-            # Fallback if no message
             console.print(Panel(
                 plan["analysis"],
                 title="[cyan]Kernox AI[/cyan]",
@@ -297,10 +429,8 @@ class Orchestrator:
         if not steps:
             return
 
-        # Show full plan upfront
         self._print_plan(steps)
 
-        # Execute each step with confirmation
         all_summaries: list[str] = []
         for i, step in enumerate(steps, 1):
             tool_name = step.get("tool", "").lower()
@@ -312,16 +442,13 @@ class Orchestrator:
                 f"[dim]{reason[:50]}[/dim]"
             )
 
-            # Ask user before each step
             if not Confirm.ask(f"Run {tool_name}?", default=True):
                 console.print(f"[yellow]⏭ Skipped {tool_name}[/yellow]")
                 continue
 
-            # Handle raw hash for hashcat
             if tool_name == "hashcat":
                 args = self._prepare_hashcat_args(args)
 
-            # Handle privesc SSH — collect credentials before building command
             if tool_name == "privesc":
                 args = self._prepare_privesc_args(args)
 
@@ -333,12 +460,10 @@ class Orchestrator:
             summary = _build_smart_summary(tool_name, parsed, args.get("target",""))
             all_summaries.append(summary)
 
-            # Smart chaining after each tool
             chain_steps = self._suggest_chain(tool_name, parsed, args)
             if chain_steps:
                 self._run_chain(chain_steps)
 
-        # Final state summary
         if all_summaries:
             self._history.append({"role": "user", "content": "Tools finished: " + " | ".join(all_summaries)})
             self._history.append({"role": "assistant", "content": "Results stored."})
@@ -348,7 +473,6 @@ class Orchestrator:
                 "Type [bold]state[/bold] to review findings or [bold]report[/bold] to export PDF.",
                 title="[cyan]Done[/cyan]", border_style="green",
             ))
-            # Ask if they want a PDF report
             from rich.prompt import Confirm as C
             if C.ask("\n[bold yellow]Export findings to PDF report?[/bold yellow]", default=False):
                 self._ask_report()
@@ -367,13 +491,12 @@ class Orchestrator:
             tool_name=tool_name,
             target=args.get("target"),
             skip_confirm=tool_name == "privesc",
-            stream_output=tool_name == "privesc",  # stream so SSH password prompt shows
+            stream_output=tool_name == "privesc",
         )
 
         if result.blocked:
             return None
 
-        # Firewall detection for nmap
         if tool_name == "nmap":
             fw = analyse_firewall(result.stdout)
             if fw.detected:
@@ -387,10 +510,109 @@ class Orchestrator:
                     result = self._executor.run(retry_cmd, tool_name="nmap-evasion", target=args.get("target"))
 
         parsed = tool.parse(result.stdout)
+        
+        # Store tool result
+        self._state.add_tool_result(
+            tool=tool_name,
+            target=args.get("target", ""),
+            parsed=parsed,
+            raw_output=result.stdout
+        )
+        
         self._updater.apply(tool_name, parsed, target=args.get("target"))
         format_results(tool_name, parsed)
+        
+        # Generate AI insights for vulnerabilities
+        self._generate_ai_insights(tool_name, parsed, args.get("target", ""))
 
         return parsed, result
+
+    def _generate_ai_insights(self, tool_name: str, parsed: dict, target: str) -> None:
+        """Generate AI explanations for vulnerabilities found."""
+        vulnerabilities = []
+        
+        if tool_name == "nuclei":
+            for finding in parsed.get("findings", []):
+                if finding.get("severity") in ("critical", "high", "medium"):
+                    vulnerabilities.append({
+                        "name": finding.get("name", ""),
+                        "severity": finding.get("severity", "medium"),
+                        "description": finding.get("description", ""),
+                    })
+        elif tool_name == "nikto":
+            for finding in parsed.get("findings", []):
+                vulnerabilities.append({
+                    "name": finding[:80],
+                    "severity": "medium",
+                    "description": finding
+                })
+        elif tool_name == "sqlmap" and parsed.get("vulnerable"):
+            vulnerabilities.append({
+                "name": "SQL Injection",
+                "severity": "critical",
+                "description": f"SQL injection found with parameters: {', '.join(parsed.get('parameters', []))}"
+            })
+        elif tool_name == "sslscan":
+            for issue in parsed.get("issues", []):
+                vulnerabilities.append({
+                    "name": issue,
+                    "severity": "high",
+                    "description": issue
+                })
+        elif tool_name == "wpscan":
+            for vuln in parsed.get("vulnerabilities", []):
+                vulnerabilities.append({
+                    "name": vuln[:80],
+                    "severity": "high",
+                    "description": vuln
+                })
+        else:
+            return
+        
+        for vuln in vulnerabilities[:3]:
+            try:
+                explanation = self._ai.chat(
+                    messages=[{
+                        "role": "user",
+                        "content": f"""As a security expert, explain this vulnerability for a penetration test report:
+
+Vulnerability: {vuln['name']}
+Severity: {vuln['severity']}
+Context: {vuln.get('description', 'No description available')}
+
+Provide a clear, professional explanation in JSON format:
+{{
+    "description": "What is this vulnerability? (2-3 sentences)",
+    "impact": "What are the risks? (1-2 sentences)",
+    "recommendation": "How to fix it? (2-3 actionable steps)"
+}}"""
+                    }],
+                    system="You are a senior security consultant. Provide clear, actionable explanations."
+                )
+                
+                import re
+                json_match = re.search(r'\{.*\}', explanation, re.DOTALL)
+                if json_match:
+                    ai_explanation = json.loads(json_match.group())
+                    self._state.add_ai_insight(
+                        vulnerability=vuln['name'],
+                        severity=vuln['severity'],
+                        tool=tool_name,
+                        target=target,
+                        explanation=ai_explanation
+                    )
+            except Exception:
+                self._state.add_ai_insight(
+                    vulnerability=vuln['name'],
+                    severity=vuln['severity'],
+                    tool=tool_name,
+                    target=target,
+                    explanation={
+                        "description": vuln.get('description', 'Vulnerability detected'),
+                        "impact": "May lead to system compromise or data breach",
+                        "recommendation": "Apply vendor patch and review security configuration"
+                    }
+                )
 
     def _suggest_chain(self, tool_name: str, parsed: dict, args: dict) -> list[dict]:
         """Build smart chain suggestions based on tool results."""
@@ -398,7 +620,6 @@ class Orchestrator:
         target = args.get("target", "")
 
         if tool_name == "nmap":
-            # Use enumerator for advanced suggestions
             enum_steps = suggest_enumeration(parsed)
             if enum_steps:
                 print_enum_plan(enum_steps)
@@ -411,7 +632,6 @@ class Orchestrator:
                             "priority": s.priority,
                         })
 
-            # Check for WordPress
             for host in parsed.get("hosts", []):
                 for port in host.get("ports", []):
                     if port.get("port") in (80, 443, 8080, 8180):
@@ -465,7 +685,6 @@ class Orchestrator:
 
         elif tool_name == "privesc":
             juicy = parsed.get("juicy_points", [])
-            # If writable passwd/shadow found → suggest hashcat
             for j in juicy:
                 if j.get("category") == "writable" and "shadow" in j.get("path",""):
                     suggestions.append({
@@ -474,7 +693,6 @@ class Orchestrator:
                         "reason": "Readable /etc/shadow — crack root hash",
                         "priority": 1,
                     })
-                # If NFS no_root_squash → remind user
                 if j.get("category") == "nfs":
                     suggestions.append({
                         "tool": "curl",
@@ -484,7 +702,6 @@ class Orchestrator:
                     })
 
         elif tool_name == "enum4linux":
-            users = parsed.get("users", [])
             shares = parsed.get("shares", [])
             if shares:
                 suggestions.append({
@@ -551,7 +768,6 @@ class Orchestrator:
                 result_data = self._run_tool(tool_name, args)
                 if result_data:
                     parsed, _ = result_data
-                    # Recurse for nested chains (max depth via history length)
                     if len(self._history) < 40:
                         nested = self._suggest_chain(tool_name, parsed, args)
                         if nested:
@@ -587,19 +803,35 @@ class Orchestrator:
 
     def _ask_report(self, results: list[dict] | None = None) -> None:
         """Ask user if they want to export findings to PDF."""
-        from datetime import datetime
         if not results:
-            # Build results from session state
-            results = [{"tool": "session", "parsed": self._state.to_dict()}]
+            results = []
+            for tool_result in self._state.get_tool_results():
+                results.append({
+                    "tool": tool_result.tool,
+                    "parsed": tool_result.parsed,
+                    "target": tool_result.target,
+                    "timestamp": tool_result.timestamp
+                })
+        
+        ai_insights = []
+        for insight in self._state.get_ai_insights():
+            ai_insights.append({
+                "vulnerability": insight.vulnerability,
+                "severity": insight.severity,
+                "tool": insight.tool,
+                "target": insight.target,
+                "ai_explanation": insight.ai_explanation
+            })
+        
         filename = f"/tmp/kernox_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
         generate_pdf_report(
             target=", ".join(self._state.hosts.keys()) or "unknown",
             results=results,
             output_path=filename,
+            ai_insights=ai_insights
         )
 
     def _print_plan(self, steps: list[dict]) -> None:
-        # Clean minimal plan display — no noisy step headers
         console.print(f"\n[bold green][Kernox][/bold green] {len(steps)} step(s) planned:\n")
         for i, s in enumerate(steps, 1):
             console.print(
@@ -611,6 +843,8 @@ class Orchestrator:
         console.print(Panel(
             "[bold]Commands:[/bold]\n"
             "  [cyan]<anything>[/cyan]     – Talk to the AI\n"
+            "  [cyan]ask <question>[/cyan] – Ask about vulnerabilities/tools\n"
+            "  [cyan]explain[/cyan]        – Get AI analysis of current findings\n"
             "  [cyan]tools[/cyan]          – List all tools\n"
             "  [cyan]tools check[/cyan]    – Check which tools are installed\n"
             "  [cyan]state[/cyan]          – Current session findings\n"
@@ -625,15 +859,17 @@ class Orchestrator:
             "  [cyan]raw off[/cyan]        – Hide raw output (silent+spinner)\n"
             "  [cyan]raw[/cyan]            – Check current raw output status\n"
             "  [cyan]exit[/cyan]           – Quit\n\n"
-            "[bold]Example prompts:[/bold]\n"
+            "[bold]Example questions:[/bold]\n"
+            "  what is SQL injection?\n"
+            "  how to exploit EternalBlue?\n"
+            "  explain the differences between nmap and masscan\n"
+            "  what should I do after finding port 445?\n"
+            "  recommend tools for WordPress enumeration\n\n"
+            "[bold]Example scans:[/bold]\n"
             "  scan target 192.168.0.209\n"
             "  run nikto on http://192.168.0.209\n"
             "  enumerate SMB on 192.168.0.209\n"
-            "  fuzz http://192.168.0.209 for vhosts\n"
-            "  scan DNS of example.com\n"
-            "  crack hash 5f4dcc3b5aa765d61d8327deb882cf99\n"
-            "  scan WordPress at http://192.168.0.209/wordpress\n"
-            "  what should I try next?",
+            "  whatweb on http://example.com",
             title="[bold cyan]Help[/bold cyan]", border_style="cyan",
         ))
 
@@ -725,14 +961,8 @@ class Orchestrator:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _explain_findings(tool_name: str, parsed: dict) -> None:
-    """
-    After a tool finishes, check for known vulnerabilities and
-    print a clear explanation + next steps to the terminal.
-    """
+    """After a tool finishes, check for known vulnerabilities."""
     from kernox.utils.report_generator import explain_vulnerability, VULN_EXPLANATIONS
-    from rich.panel import Panel
-    from rich.table import Table
-    from rich import box
     from rich.text import Text
 
     explained = set()
@@ -768,7 +998,6 @@ def _explain_findings(tool_name: str, parsed: dict) -> None:
             box=box.ROUNDED,
         ))
 
-    # Check based on tool
     if tool_name == "sslscan":
         for issue in parsed.get("issues",[]):
             info = explain_vulnerability(issue)
@@ -782,15 +1011,11 @@ def _explain_findings(tool_name: str, parsed: dict) -> None:
                 _show_vuln(info)
 
     elif tool_name == "nmap":
-        # Check service versions for known vulns
         for host in parsed.get("hosts",[]):
             for port in host.get("ports",[]):
                 version = port.get("version","").lower()
-                service = port.get("service","").lower()
-                # vsftpd backdoor
                 if "vsftpd" in version and "2.3.4" in version:
                     _show_vuln(VULN_EXPLANATIONS["vsftpd-backdoor"])
-                # UnrealIRCd backdoor
                 if "unrealircd" in version and "3.2.8.1" in version:
                     _show_vuln(VULN_EXPLANATIONS["unrealircd-backdoor"])
 
@@ -800,7 +1025,6 @@ def _explain_findings(tool_name: str, parsed: dict) -> None:
             info = explain_vulnerability(name)
             if info:
                 _show_vuln(info)
-            # Also show nuclei's own description for high/critical
             elif finding.get("severity") in ("critical","high"):
                 desc = finding.get("description","")
                 if desc:
@@ -820,11 +1044,7 @@ def _explain_findings(tool_name: str, parsed: dict) -> None:
                 f"[bold red]SNMP Community Strings Found![/bold red]\n\n"
                 f"Found [bold]{len(communities)}[/bold] accessible community strings.\n\n"
                 + "\n".join(f"  [{c.get('community','')}] {c.get('info','')[:60]}"
-                            for c in communities[:5]) +
-                "\n\n[bold]What this means:[/bold]\n"
-                "SNMP with known community strings allows reading system info,\n"
-                "network topology, and running processes.\n\n"
-                "[bold green]Fix:[/bold green] Change community strings from defaults. Use SNMPv3.",
+                            for c in communities[:5]),
                 title="[bold yellow]⚠ SNMP Exposed[/bold yellow]",
                 border_style="yellow",
                 box=box.ROUNDED,
@@ -835,21 +1055,11 @@ def _explain_findings(tool_name: str, parsed: dict) -> None:
             "[bold red]SQL Injection Confirmed![/bold red]\n\n"
             "The target is vulnerable to SQL injection.\n"
             f"DBMS: [cyan]{parsed.get('dbms','Unknown')}[/cyan]\n"
-            f"Injectable parameters: [yellow]{', '.join(parsed.get('parameters',[]))}[/yellow]\n\n"
-            "[bold]What this means:[/bold]\n"
-            "An attacker can read, modify or delete database contents.\n"
-            "May allow authentication bypass, data theft, or in some cases RCE.\n\n"
-            "[bold green]Fix:[/bold green] Use parameterized queries / prepared statements.\n"
-            "Never concatenate user input into SQL queries.",
+            f"Injectable parameters: [yellow]{', '.join(parsed.get('parameters',[]))}[/yellow]",
             title="[bold red]⚠ SQL Injection Found[/bold red]",
             border_style="red",
             box=box.ROUNDED,
         ))
-
-
-def _explain_more_findings(tool_name: str, parsed: dict) -> None:
-    """Additional explain for tools not in main _explain_findings."""
-    pass  # Extended in future versions
 
 
 def _build_smart_summary(tool_name: str, parsed: dict, target: str) -> str:
@@ -903,8 +1113,26 @@ def _build_smart_summary(tool_name: str, parsed: dict, target: str) -> str:
             for i in parsed.get("issues",[]):
                 lines.append(f"  ISSUE: {i}")
         elif tool_name == "whatweb":
-            for v in parsed.get("versions",[]):
-                lines.append(f"  TECH: {v.get('tech','')} {v.get('version','')}")
+            techs = parsed.get("technologies", [])
+            versions = parsed.get("versions", [])
+            tech_dict = {}
+            for v in versions:
+                tech_name = v.get('tech', '')
+                version = v.get('version', '')
+                if tech_name:
+                    tech_dict[tech_name] = version
+            for tech in techs:
+                if tech not in tech_dict:
+                    tech_dict[tech] = ''
+            if tech_dict:
+                lines.append(f"Technologies detected: {len(tech_dict)}")
+                for tech, version in list(tech_dict.items())[:15]:
+                    if version:
+                        lines.append(f"  {tech} {version}")
+                    else:
+                        lines.append(f"  {tech}")
+            else:
+                lines.append(f"Raw output: {parsed.get('raw', '')[:200]}")
         elif tool_name == "wafw00f":
             lines.append(f"WAF: {parsed.get('detected',False)} Names: {', '.join(parsed.get('waf_names',[]))}")
         elif tool_name == "dnsrecon":
@@ -920,32 +1148,6 @@ def _build_smart_summary(tool_name: str, parsed: dict, target: str) -> str:
             lines.append(f"Cracked: {len(cracked)}")
             for c in cracked[:10]:
                 lines.append(f"  CRACKED: {c.get('hash','')} = {c.get('plaintext','')}")
-        elif tool_name == "gobuster":
-            paths = parsed.get("paths",[])
-            lines.append(f"Paths found: {len(paths)}")
-            for p in paths[:20]:
-                lines.append(f"  PATH: {p}")
-        elif tool_name == "sslscan":
-            lines.append(f"Issues: {len(parsed.get('issues',[]))} WeakProtos: {', '.join(parsed.get('weak_protocols',[]))}")
-            for i in parsed.get("issues",[]):
-                lines.append(f"  ISSUE: {i}")
-        elif tool_name == "whatweb":
-            for v in parsed.get("versions",[]):
-                lines.append(f"  TECH: {v.get('tech','')} {v.get('version','')}")
-        elif tool_name == "wafw00f":
-            lines.append(f"WAF: {parsed.get('detected',False)} Names: {', '.join(parsed.get('waf_names',[]))}")
-        elif tool_name == "dnsrecon":
-            lines.append(f"Subdomains: {parsed.get('total_subdomains',0)} ZoneTransfer: {parsed.get('zone_transfer_possible',False)}")
-            for s in parsed.get("subdomains",[])[:10]:
-                lines.append(f"  SUB: {s.get('subdomain','')} -> {s.get('ip','')}")
-        elif tool_name == "nuclei":
-            lines.append(f"Critical: {parsed.get('critical',0)} High: {parsed.get('high',0)} Medium: {parsed.get('medium',0)}")
-            for f in parsed.get("findings",[])[:15]:
-                lines.append(f"  [{f.get('severity','').upper()}] {f.get('name','')} -> {f.get('matched','')[:80]}")
-        elif tool_name == "sqlmap":
-            lines.append(f"Vulnerable: {parsed.get('vulnerable',False)} DBMS: {parsed.get('dbms','')}")
-            lines.append(f"Params: {', '.join(parsed.get('parameters',[]))}")
-            lines.append(f"Databases: {', '.join(parsed.get('databases',[]))}")
         elif tool_name == "smbclient":
             shares = parsed.get("shares",[])
             files  = parsed.get("files",[])
@@ -977,7 +1179,6 @@ def _build_smart_summary(tool_name: str, parsed: dict, target: str) -> str:
 def _extract_json_plan(text: str) -> Optional[dict]:
     import re
 
-    # 1. Try ```json ... ``` block
     pattern = r"```(?:json)?\s*(\{.*?\})\s*```"
     match = re.search(pattern, text, re.DOTALL)
     if match:
@@ -986,7 +1187,6 @@ def _extract_json_plan(text: str) -> Optional[dict]:
         except json.JSONDecodeError:
             pass
 
-    # 2. Try full text as JSON
     stripped = text.strip()
     if stripped.startswith("{"):
         try:
@@ -994,32 +1194,25 @@ def _extract_json_plan(text: str) -> Optional[dict]:
         except json.JSONDecodeError:
             pass
 
-    # 3. Find JSON object ANYWHERE in the text (AI often puts text before/after)
-    # Find the first { and try to extract a valid JSON object from there
-    brace_start = text.find("{")
-    if brace_start != -1:
-        # Try progressively from each { found
-        for start in [i for i, c in enumerate(text) if c == "{"]:
-            # Find matching closing brace
-            depth = 0
-            for i, c in enumerate(text[start:], start):
-                if c == "{":
-                    depth += 1
-                elif c == "}":
-                    depth -= 1
-                    if depth == 0:
-                        candidate = text[start:i+1]
-                        try:
-                            parsed = json.loads(candidate)
-                            # Validate it looks like a kernox plan
-                            if isinstance(parsed, dict) and (
-                                "steps" in parsed or
-                                "message" in parsed or
-                                "analysis" in parsed
-                            ):
-                                return parsed
-                        except json.JSONDecodeError:
-                            pass
-                        break
+    for start in [i for i, c in enumerate(text) if c == "{"]:
+        depth = 0
+        for i, c in enumerate(text[start:], start):
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start:i+1]
+                    try:
+                        parsed = json.loads(candidate)
+                        if isinstance(parsed, dict) and (
+                            "steps" in parsed or
+                            "message" in parsed or
+                            "analysis" in parsed
+                        ):
+                            return parsed
+                    except json.JSONDecodeError:
+                        pass
+                    break
 
     return None

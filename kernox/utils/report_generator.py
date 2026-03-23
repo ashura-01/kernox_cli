@@ -123,6 +123,7 @@ def generate_pdf_report(
     results: list[dict],
     output_path: str = "",
     privesc_data: dict | None = None,
+    ai_insights: list[dict] | None = None,
 ) -> str:
     """Generate a professional light-theme PDF pentest report."""
 
@@ -367,6 +368,53 @@ def generate_pdf_report(
 
         story.append(PageBreak())
 
+    # ── AI-Generated Vulnerability Explanations ─────────────────────────────────────
+    if ai_insights:
+        story.append(Paragraph("AI Vulnerability Analysis", h1_s))
+        story.append(HRFlowable(width="100%", thickness=1, color=C_BORDER))
+        story.append(Spacer(1, 0.3*cm))
+        
+        for insight in ai_insights[:10]:  # Limit to 10 vulnerabilities
+            sev = insight.get("severity", "HIGH").lower()
+            fg, bg = SEV_COLORS.get(sev, (C_TEXT, C_LIGHT))
+            
+            # Severity badge
+            badge_data = [[f"{insight['severity'].upper()}  {insight['vulnerability']}"]]
+            bt = Table(badge_data, colWidths=[17*cm])
+            bt.setStyle(TableStyle([
+                ("BACKGROUND", (0,0),(-1,-1), bg),
+                ("TEXTCOLOR",  (0,0),(-1,-1), fg),
+                ("FONTNAME",   (0,0),(-1,-1), "Helvetica-Bold"),
+                ("FONTSIZE",   (0,0),(-1,-1), 10),
+                ("LEFTPADDING",(0,0),(-1,-1), 8),
+                ("TOPPADDING", (0,0),(-1,-1), 6),
+                ("BOTTOMPADDING",(0,0),(-1,-1),6),
+                ("BOX",        (0,0),(-1,-1), 1, fg),
+            ]))
+            story.append(bt)
+            story.append(Spacer(1, 0.1*cm))
+            
+            explanation = insight.get("ai_explanation", {})
+            story.append(Paragraph("<b>Description:</b>", h2_s))
+            story.append(Paragraph(explanation.get("description", "No description available"), body_s))
+            
+            story.append(Paragraph("<b>Impact:</b>", h2_s))
+            story.append(Paragraph(explanation.get("impact", "No impact information available"), body_s))
+            
+            story.append(Paragraph("<b>Recommendation:</b>", h2_s))
+            story.append(Paragraph(explanation.get("recommendation", "No recommendation available"), body_s))
+            
+            if insight.get("tool"):
+                story.append(Paragraph(f"<b>Discovered by:</b> {insight['tool']}", muted_s))
+            if insight.get("target"):
+                story.append(Paragraph(f"<b>Target:</b> {insight['target']}", muted_s))
+            
+            story.append(Spacer(1, 0.3*cm))
+            story.append(HRFlowable(width="100%", thickness=0.5, color=C_BORDER))
+            story.append(Spacer(1, 0.2*cm))
+        
+        story.append(PageBreak())
+
     # ── Technical Details ─────────────────────────────────────────────────────
     story.append(Paragraph("Technical Findings", h1_s))
     story.append(HRFlowable(width="100%", thickness=1, color=C_BORDER))
@@ -504,8 +552,26 @@ def _write_tool_section_light(story, tool, parsed, body, code, muted,
                 story.append(Paragraph(f.get("description","")[:150], muted))
 
     elif tool == "whatweb":
-        for v in parsed.get("versions",[]):
-            story.append(Paragraph(f"• {v.get('tech','')} {v.get('version','')}", body))
+        techs = parsed.get("technologies", [])
+        versions = parsed.get("versions", [])
+        
+        tech_dict = {}
+        for v in versions:
+            tech_name = v.get('tech', '')
+            version = v.get('version', '')
+            if tech_name:
+                tech_dict[tech_name] = version
+        for tech in techs:
+            if tech not in tech_dict:
+                tech_dict[tech] = ''
+        
+        if tech_dict:
+            story.append(Paragraph("<b>Technologies Detected:</b>", body))
+            for tech, version in sorted(tech_dict.items()):
+                if version:
+                    story.append(Paragraph(f"• {tech} {version}", body))
+                else:
+                    story.append(Paragraph(f"• {tech}", body))
 
     elif tool == "wafw00f":
         story.append(Paragraph(

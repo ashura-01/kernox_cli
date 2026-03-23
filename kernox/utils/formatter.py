@@ -544,29 +544,47 @@ def format_whatweb(parsed: dict) -> None:
     techs   = parsed.get("technologies", [])
     versions= parsed.get("versions", [])
     emails  = parsed.get("emails", [])
-    header  = Text()
+    
+    # Merge technologies with versions
+    tech_dict = {}
+    for v in versions:
+        tech_dict[v["tech"]] = v["version"]
+    for tech in techs:
+        if tech not in tech_dict:
+            tech_dict[tech] = ""
+    
+    header = Text()
     header.append("  Technologies: ", style="dim")
-    header.append(str(len(techs)), style="bold cyan")
-    if versions:
-        header.append("  | Versions detected: ", style="dim")
-        header.append(str(len(versions)), style="bold yellow")
+    header.append(str(len(tech_dict)), style="bold cyan")
     if emails:
         header.append("  | Emails: ", style="dim")
         header.append(str(len(emails)), style="bold green")
+    
     console.print(Panel(header, title="[bold cyan]WhatWeb Results[/bold cyan]",
                         border_style="cyan", box=box.ROUNDED))
-    if versions:
+    
+    # Display ALL technologies (with and without versions)
+    if tech_dict:
         table = Table(show_header=True, header_style="bold magenta",
                       box=box.SIMPLE_HEAVY, border_style="dim")
         table.add_column("Technology", style="bold cyan")
         table.add_column("Version", style="yellow")
-        for v in versions:
-            table.add_row(v["tech"], v["version"])
+        
+        for tech, version in sorted(tech_dict.items()):
+            if version:
+                table.add_row(tech, version)
+            else:
+                table.add_row(tech, "[dim]detected[/dim]")
         console.print(table)
+    else:
+        console.print("[yellow]  No technologies detected.[/yellow]")
+    
+    # Display emails
     if emails:
-        console.print("[bold magenta]── Emails ──[/bold magenta]")
+        console.print("\n[bold magenta]── Emails ──[/bold magenta]")
         for e in emails:
             console.print(f"  [green]•[/green] {e}")
+    
     console.print()
 
 def format_wafw00f(parsed: dict) -> None:

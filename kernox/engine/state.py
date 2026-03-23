@@ -9,7 +9,8 @@ one session but is intentionally NOT persisted to disk.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from datetime import datetime
+from typing import Any, Optional
 
 
 @dataclass
@@ -19,6 +20,27 @@ class HostInfo:
     os: str = ""
     ports: list[dict] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ToolResult:
+    """Store complete tool execution results."""
+    tool: str
+    target: str
+    parsed: dict
+    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    raw_output: str = ""
+
+
+@dataclass
+class AIInsight:
+    """Store AI-generated explanations for vulnerabilities."""
+    vulnerability: str
+    severity: str
+    tool: str
+    target: str
+    ai_explanation: dict
+    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
 
 class SessionState:
@@ -32,6 +54,45 @@ class SessionState:
         self._paths: dict[str, list[dict]] = {}         # target_url → [path findings]
         self._vulns: dict[str, list[dict]] = {}         # target_url → [vuln dicts]
         self._notes: list[str] = []                      # free-form notes
+        self._tool_results: list[ToolResult] = []        # tool execution results
+        self._ai_insights: list[AIInsight] = []          # AI vulnerability explanations
+        self._session_start: str = datetime.now().isoformat()
+
+    # ── Tool Results ─────────────────────────────────────────────────────────
+
+    def add_tool_result(self, tool: str, target: str, parsed: dict, raw_output: str = "") -> None:
+        """Store complete tool result for reporting."""
+        self._tool_results.append(ToolResult(
+            tool=tool,
+            target=target,
+            parsed=parsed,
+            raw_output=raw_output[:5000]
+        ))
+
+    def get_tool_results(self, tool: Optional[str] = None) -> list[ToolResult]:
+        """Get tool results, optionally filtered by tool name."""
+        if tool:
+            return [r for r in self._tool_results if r.tool == tool]
+        return self._tool_results
+
+    # ── AI Insights ──────────────────────────────────────────────────────────
+
+    def add_ai_insight(self, vulnerability: str, severity: str, tool: str, 
+                       target: str, explanation: dict) -> None:
+        """Store AI-generated vulnerability explanation."""
+        self._ai_insights.append(AIInsight(
+            vulnerability=vulnerability,
+            severity=severity,
+            tool=tool,
+            target=target,
+            ai_explanation=explanation
+        ))
+
+    def get_ai_insights(self, severity: Optional[str] = None) -> list[AIInsight]:
+        """Get AI insights, optionally filtered by severity."""
+        if severity:
+            return [i for i in self._ai_insights if i.severity.lower() == severity.lower()]
+        return self._ai_insights
 
     # ── Hosts ────────────────────────────────────────────────────────────────
 
@@ -92,6 +153,7 @@ class SessionState:
 
     def to_dict(self) -> dict:
         return {
+            "session_start": self._session_start,
             "hosts": {
                 ip: {
                     "ip": h.ip,
@@ -105,6 +167,26 @@ class SessionState:
             "paths": self._paths,
             "vulns": self._vulns,
             "notes": self._notes,
+            "tool_results": [
+                {
+                    "tool": r.tool,
+                    "target": r.target,
+                    "parsed": r.parsed,
+                    "timestamp": r.timestamp,
+                }
+                for r in self._tool_results
+            ],
+            "ai_insights": [
+                {
+                    "vulnerability": i.vulnerability,
+                    "severity": i.severity,
+                    "tool": i.tool,
+                    "target": i.target,
+                    "explanation": i.ai_explanation,
+                    "timestamp": i.timestamp,
+                }
+                for i in self._ai_insights
+            ],
         }
 
     def summary(self) -> str:
@@ -112,5 +194,7 @@ class SessionState:
             f"Hosts: {len(self._hosts)}",
             f"URL targets with paths found: {len(self._paths)}",
             f"Vulnerable targets: {len(self._vulns)}",
+            f"Tools run: {len(self._tool_results)}",
+            f"AI insights: {len(self._ai_insights)}",
         ]
         return " | ".join(lines)
