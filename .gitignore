@@ -1,0 +1,53 @@
+.vscode
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+wheels/
+*.egg-link
+MANIFEST
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Kernox runtime data
+~/.kernox/
+*.db
+
+# Temp tool output files
+/tmp/kernox_*
+
+# Reports
+*.pdf
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Secrets (never commit these!)
+.env
+secrets.txt
+api_keys.txt
