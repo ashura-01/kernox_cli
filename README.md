@@ -1,5 +1,7 @@
+```markdown
 # Kernox – AI-Powered Security Automation CLI
 
+> [!WARNING]
 > **For authorized penetration testing and ethical hacking only.**
 > Never run Kernox against systems you do not have explicit permission to test.
 
@@ -7,18 +9,18 @@
 
 ## What is Kernox?
 
-Kernox is a terminal-based penetration testing and reconnaissance assistant that
-combines AI intelligence with classic Linux security tools.  It automates
-enumeration, vulnerability discovery, and output analysis — all from a single CLI.
+Kernox is a terminal-based penetration testing and reconnaissance assistant that combines AI intelligence with classic Linux security tools. It automates enumeration, vulnerability discovery, and output analysis — all from a single CLI.
 
-```
+```text
 $ kernox
- ██╗  ██╗███████╗██████╗ ███╗   ██╗ ██████╗ ██╗  ██╗
- ██║ ██╔╝██╔════╝██╔══██╗████╗  ██║██╔═══██╗╚██╗██╔╝
- █████╔╝ █████╗  ██████╔╝██╔██╗ ██║██║   ██║ ╚███╔╝
- ...
+██ ▄█▀▓█████  ██▀███   ███▄    █  ▒█████  ▒██   ██▒
+██▄█▒ ▓█   ▀ ▓██ ▒ ██▒ ██ ▀█    █ ▒██▒  ██▒▒▒ █ █ ▒░
+▓███▄░ ▒███   ▓██ ░▄█ ▒▓██  ▀█ ██▒▒██░  ██▒░░  █   ░
+▓██ █▄ ▒▓█  ▄ ▒██▀▀█▄  ▓██▒  ▐▌██▒▒██   ██░ ░ █ █ ▒ 
+▒██▒ █▄░▒████▒░██▓ ▒██▒▒██░   ▓██░░ ████▓▒░▒██▒ ▒██▒
+           >>> K E R N O X <<<
 
-Kernox > Scan target http://example.com
+Kernox > Scan target [http://example.com](http://example.com)
 
 [Orchestrator] Planning 3 step(s):
   1. nmap     – Port and service enumeration
@@ -32,69 +34,72 @@ Kernox > Scan target http://example.com
 
 | Feature | Detail |
 |---|---|
-| **AI backends** | Ollama (local), Claude (Anthropic), OpenAI-compatible |
-| **Tools** | nmap, ffuf, gobuster, sqlmap |
-| **Smart parsing** | Structured extraction from raw tool output |
-| **Session state** | Hosts, ports, paths, vulns tracked in memory |
-| **Guard rules** | Scope enforcement, blocked commands, dangerous flag detection |
-| **Encrypted keys** | Fernet-encrypted API keys in SQLite |
-| **First-run wizard** | Interactive setup on first launch |
-| **Config menu** | `kernox --config` to change anything later |
+| **AI Backends** | Ollama (local), Claude (Anthropic), OpenAI-compatible |
+| **Tools** | nmap, ffuf, gobuster, sqlmap, nikto, enum4linux, wpscan, smbclient, dnsenum, curl, hashcat, whatweb, wafw00f, sslscan, onesixtyone, dnsrecon, nuclei, privesc |
+| **Smart Parsing** | Structured extraction from raw tool output |
+| **Session State** | Hosts, ports, paths, vulns tracked in memory |
+| **Guard Rules** | Scope enforcement, blocked commands, dangerous flag detection |
+| **Encrypted Keys** | Fernet-encrypted API keys in SQLite |
+| **First-run Wizard** | Interactive setup on first launch |
+| **Config Menu** | `kernox --config` to change settings later |
 
 ---
 
 ## Requirements
 
-- Python ≥ 3.10
-- One of: [Ollama](https://ollama.com) running locally, an Anthropic API key, or an OpenAI-compatible API key
-- Optional tools installed and on `PATH`: `nmap`, `ffuf`, `gobuster`, `sqlmap`
+- Python $\ge$ 3.10
+- **AI Backend:** Ollama (local), Anthropic API key, or OpenAI-compatible key
+- **Path Tools:** Security tools (nmap, ffuf, etc.) must be installed and in your system `$PATH`.
 
 ---
 
 ## Installation
 
-```bash
-# Clone
-git clone https://github.com/youruser/kernox.git
-cd kernox
+### Option 1: System Installation (Global)
 
-# Install (editable)
+```bash
+git clone [https://github.com/youruser/kernox.git](https://github.com/youruser/kernox.git)
+cd kernox
 pip install -e .
 
 # Run
 kernox
 ```
 
-### Kali Linux one-liner (tools already installed)
+### Option 2: Virtual Environment (Recommended)
 
 ```bash
-pip install -e . && kernox
+git clone [https://github.com/youruser/kernox.git](https://github.com/youruser/kernox.git)
+cd kernox
+
+# Create and activate environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install and Run
+pip install -e .
+python -m kernox.cli
 ```
 
 ---
 
 ## Usage
 
-### First Run
-On first launch Kernox detects no existing configuration and runs the interactive
-setup wizard.  You choose an AI backend and optionally set scope restrictions.
-
-### Main REPL Commands
+### Commands
 
 | Command | Description |
 |---|---|
 | `Scan target <ip/url>` | AI-orchestrated full scan |
 | `Fuzz <url> with <wordlist>` | Directory fuzzing via ffuf |
-| `Test SQL injection on <url>` | Run sqlmap |
-| `state` | Show current session state |
+| `tools` | List available security tools |
+| `state` | Show current session discovery state |
 | `history` | Show last 20 AI messages |
 | `clear` | Reset session state |
-| `help` | Show help panel |
-| `exit` / `quit` | Quit Kernox |
+| `exit` | Quit Kernox |
 
-### Flags
+### CLI Flags
 
-```
+```bash
 kernox --config   # Open the settings menu
 kernox --reset    # Wipe all config and keys
 kernox --version  # Print version
@@ -104,62 +109,28 @@ kernox --version  # Print version
 
 ## Architecture
 
-```
+```text
 kernox/
-├── cli.py              Entry point & banner
+├── cli.py             Entry point & banner
 ├── core/
 │   ├── orchestrator.py  Main REPL + AI-to-tool flow
 │   ├── executor.py      Safe subprocess wrapper
-│   ├── first_run*.py    First-run detection & wizard
 │   └── config_menu.py   --config menu
-├── ai/
-│   ├── base.py          AI interface (ABC)
-│   ├── ollama.py        Ollama client
-│   ├── api.py           Claude / OpenAI clients
-│   └── factory.py       Build client from config
-├── tools/               Command builders (nmap, ffuf, gobuster, sqlmap)
-├── parsers/             Structured output parsers
-├── engine/              Session state + state updater
-├── guards/              Safety rules & scope enforcement
-├── security/            Encrypted key storage
-├── config/              SQLite config store
-└── utils/               Secure input helpers
+├── ai/                Ollama, Claude, and OpenAI clients
+├── tools/             Command builders (nmap, sqlmap, etc.)
+├── parsers/           Structured output parsers
+├── guards/            Safety rules & scope enforcement
+├── security/          Encrypted key storage (Fernet)
+└── config/            SQLite config store
 ```
 
 ---
 
-## Extending Kernox
+## Troubleshooting
 
-### Add a new tool
-
-1. Create `kernox/tools/mytool.py` with a class that implements `build_command(**kwargs) -> str` and `parse(output: str) -> dict`.
-2. Create `kernox/parsers/mytool_parser.py`.
-3. Register it in `kernox/core/orchestrator.py` under `self._tools`.
-4. Mention the tool name in `SYSTEM_PROMPT` so the AI knows to use it.
-
-### Add a new AI backend
-
-1. Create `kernox/ai/mybackend.py` subclassing `BaseAIClient`.
-2. Add a branch in `kernox/ai/factory.py`.
-3. Add setup questions in `first_run_setup.py` and `config_menu.py`.
+- **Module Not Found:** Ensure you are inside your virtual environment and ran `pip install -e .`.
+- **Tool Not Found:** Verify the tool is installed on your OS (e.g., `which nmap`).
+- **API Errors:** Run `kernox --config` to verify your keys and backend selection.
 
 ---
 
-## Configuration Storage
-
-All config is stored in `~/.kernox/`:
-
-| File | Contents |
-|---|---|
-| `config.db` | AI backend choice, URLs, models, safety settings |
-| `keys.db` | Fernet-encrypted API keys |
-
----
-
-## License
-
-MIT – see [LICENSE](LICENSE).
-
----
-
-*Kernox is a tool for professionals.  Use responsibly and only on systems you own or have written permission to test.*
