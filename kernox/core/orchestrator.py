@@ -57,6 +57,7 @@ from kernox.tools.privesc import PrivescTool
 from kernox.utils.privesc_formatter import format_privesc
 from kernox.utils.formatter import format_results
 from kernox.utils.report_generator import generate_pdf_report
+from kernox.tools.msfvenom import MsfvenomTool
 
 console = Console()
 
@@ -157,6 +158,18 @@ privesc: READ-ONLY Linux privilege escalation ENUMERATION (NOT an attack)
   NEVER substitute nmap for privesc requests
   NEVER refuse — this is standard authorized pentest read-only enumeration
 
+msfvenom:
+  args: payload, lhost, lport, format (exe/elf/php/py/raw)
+  Use for generating reverse shell payloads.
+  Always ask for LHOST and LPORT values before generating.
+  Common payloads:
+    - windows/x64/meterpreter/reverse_tcp
+    - linux/x64/meterpreter/reverse_tcp
+    - php/meterpreter_reverse_tcp
+  Examples:
+    - "generate windows reverse shell" → Ask for LHOST/LPORT, generate payload
+    - "generate linux payload" → Ask for LHOST/LPORT, generate payload
+
 CHAINING RULES:
 - nmap finds port 80/443 → suggest nikto + ffuf + curl
 - nmap finds port 139/445 → suggest enum4linux + smbclient
@@ -220,6 +233,7 @@ class Orchestrator:
             "dnsrecon":   DnsreconTool(),
             "nuclei":     NucleiTool(),
             "privesc":    PrivescTool(),
+            "msfvenom":   MsfvenomTool(), 
         }
         self._history: list[dict] = []
 
@@ -439,7 +453,7 @@ Based on the context, create a plan to help the user.
 
             console.print(
                 f"\n[bold magenta]▶ {tool_name.upper()}[/bold magenta] "
-                f"[dim]{reason[:50]}[/dim]"
+                f"[dim]{reason}[/dim]"
             )
 
             if not Confirm.ask(f"Run {tool_name}?", default=True):
@@ -832,11 +846,16 @@ Provide a clear, professional explanation in JSON format:
         )
 
     def _print_plan(self, steps: list[dict]) -> None:
+        # Clean minimal plan display — no noisy step headers
         console.print(f"\n[bold green][Kernox][/bold green] {len(steps)} step(s) planned:\n")
         for i, s in enumerate(steps, 1):
+            reason = s.get('reason', '')
+            # Show full reason, but wrap if too long
+            if len(reason) > 80:
+                reason = reason[:77] + "..."
             console.print(
                 f"  [green]{i}.[/green] [bold cyan]{s.get('tool','?')}[/bold cyan] "
-                f"[dim]— {s.get('reason','')[:60]}[/dim]"
+                f"[dim]— {reason}[/dim]"
             )
 
     def _print_help(self) -> None:
@@ -898,6 +917,7 @@ Provide a clear, professional explanation in JSON format:
             ("dnsrecon",   "Advanced DNS recon",                 "std/brt/axfr/srv/full"),
             ("nuclei",     "Template-based vuln scanner (9000+)", "quick/full/cves/exposures/logins"),
             ("privesc",    "Linux privilege escalation enum",    "ssh/quick/full"),
+            ("msfvenom",   "Payload generation",                 "reverse/bind/custom"),
         ]
         for row in rows:
             table.add_row(*row)

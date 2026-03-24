@@ -47,6 +47,7 @@ TOOL_BINARIES = {
     "nuclei":       "nuclei",
     "ssh":          "ssh",
     "sshpass":      "sshpass",
+    "msfvenom": "msfvenom",
 }
 
 # Install hints per tool
@@ -69,6 +70,7 @@ INSTALL_HINTS = {
     "dnsrecon":     "sudo apt install dnsrecon  OR  pip install dnsrecon",
     "nuclei":       "sudo apt install nuclei  OR  go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest",
     "sshpass":      "sudo apt install sshpass",
+    "msfvenom": "sudo apt install metasploit-framework",
 }
 
 
@@ -174,7 +176,7 @@ class Executor:
 
         # 2. Optional confirmation — skip if tool handles its own interaction
         if not skip_confirm and self._cfg.get("confirm_before_exec") == "1":
-            console.print(f"\n[bold yellow]⚡ About to run:[/bold yellow] {command[:80]}...\n")
+            console.print(f"\n[bold yellow]⚡ About to run:[/bold yellow] {command}...\n")
             if not Confirm.ask("Execute?", default=True):
                 console.print("[yellow]Skipped.[/yellow]")
                 return ExecutionResult(
@@ -200,7 +202,7 @@ class Executor:
                 duration_seconds=0.0,
             )
 
-        console.print(f"\n[dim]$ {command[:80]}[/dim]")
+        console.print(f"\n[dim]$ {command}[/dim]")
         start = time.monotonic()
         stdout_parts: list[str] = []
         stderr_parts: list[str] = []

@@ -7,6 +7,7 @@ structured table/panel to the terminal.
 
 from __future__ import annotations
 
+import json
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -64,11 +65,11 @@ def format_nmap(parsed: dict) -> None:
         high_risk = [p for p in open_ports if p["port"] in HIGH_RISK_PORTS]
 
         summary = Text()
-        summary.append(f"  OS: ", style="dim")
+        summary.append("  OS: ", style="dim")
         summary.append(f"{os_info}\n", style="cyan")
-        summary.append(f"  Open ports: ", style="dim")
+        summary.append("  Open ports: ", style="dim")
         summary.append(f"{len(open_ports)}", style="bold green")
-        summary.append(f"  |  High-risk: ", style="dim")
+        summary.append("  |  High-risk: ", style="dim")
         summary.append(f"{len(high_risk)}", style="bold red" if high_risk else "green")
 
         console.print(Panel(summary, title=title, border_style="cyan", box=box.ROUNDED))
@@ -142,7 +143,7 @@ def format_nikto(parsed: dict) -> None:
     header.append("  Findings: ", style="dim")
     header.append(f"{len(findings)}", style="bold red" if findings else "green")
     if osvdb:
-        header.append(f"  |  OSVDB refs: ", style="dim")
+        header.append("  |  OSVDB refs: ", style="dim")
         header.append(str(len(osvdb)), style="bold red")
 
     console.print(Panel(header, title="[bold cyan]Nikto Scan Results[/bold cyan]",
@@ -346,37 +347,6 @@ def format_gobuster(parsed: dict) -> None:
     console.print()
 
 
-# ── Dispatcher ────────────────────────────────────────────────────────────────
-
-FORMATTERS = {
-    "nmap": format_nmap,
-    "nikto": format_nikto,
-    "enum4linux": format_enum4linux,
-    "ffuf": format_ffuf,
-    "sqlmap": format_sqlmap,
-    "gobuster": format_gobuster,
-}
-
-
-def format_results(tool_name: str, parsed: dict) -> None:
-    """Dispatch to the correct formatter for *tool_name*."""
-    if tool_name == "privesc":
-        from kernox.utils.privesc_formatter import format_privesc
-        format_privesc(parsed)
-        return
-    formatter = FORMATTERS.get(tool_name)
-    if formatter:
-        formatter(parsed)
-    else:
-        # Fallback: just print the dict nicely
-        import json
-        console.print(Panel(
-            json.dumps(parsed, indent=2, default=str),
-            title=f"[cyan]{tool_name} Results[/cyan]",
-            border_style="cyan",
-        ))
-
-
 def format_wpscan(parsed: dict) -> None:
     version = parsed.get("wp_version", "Unknown")
     vulns   = parsed.get("vulnerabilities", [])
@@ -530,21 +500,11 @@ def format_hashcat(parsed: dict) -> None:
     console.print()
 
 
-# Update FORMATTERS
-FORMATTERS.update({
-    "wpscan":    format_wpscan,
-    "smbclient": format_smbclient,
-    "dnsenum":   format_dnsenum,
-    "curl":      format_curl,
-    "hashcat":   format_hashcat,
-})
-
-
 def format_whatweb(parsed: dict) -> None:
     techs   = parsed.get("technologies", [])
     versions= parsed.get("versions", [])
     emails  = parsed.get("emails", [])
-    
+
     # Merge technologies with versions
     tech_dict = {}
     for v in versions:
@@ -552,24 +512,24 @@ def format_whatweb(parsed: dict) -> None:
     for tech in techs:
         if tech not in tech_dict:
             tech_dict[tech] = ""
-    
+
     header = Text()
     header.append("  Technologies: ", style="dim")
     header.append(str(len(tech_dict)), style="bold cyan")
     if emails:
         header.append("  | Emails: ", style="dim")
         header.append(str(len(emails)), style="bold green")
-    
+
     console.print(Panel(header, title="[bold cyan]WhatWeb Results[/bold cyan]",
                         border_style="cyan", box=box.ROUNDED))
-    
+
     # Display ALL technologies (with and without versions)
     if tech_dict:
         table = Table(show_header=True, header_style="bold magenta",
                       box=box.SIMPLE_HEAVY, border_style="dim")
         table.add_column("Technology", style="bold cyan")
         table.add_column("Version", style="yellow")
-        
+
         for tech, version in sorted(tech_dict.items()):
             if version:
                 table.add_row(tech, version)
@@ -578,14 +538,15 @@ def format_whatweb(parsed: dict) -> None:
         console.print(table)
     else:
         console.print("[yellow]  No technologies detected.[/yellow]")
-    
+
     # Display emails
     if emails:
         console.print("\n[bold magenta]── Emails ──[/bold magenta]")
         for e in emails:
             console.print(f"  [green]•[/green] {e}")
-    
+
     console.print()
+
 
 def format_wafw00f(parsed: dict) -> None:
     detected = parsed.get("detected", False)
@@ -598,6 +559,7 @@ def format_wafw00f(parsed: dict) -> None:
     console.print(Panel(content, title="[bold cyan]WAF Detection[/bold cyan]",
                         border_style=color, box=box.ROUNDED))
     console.print()
+
 
 def format_sslscan(parsed: dict) -> None:
     issues       = parsed.get("issues", [])
@@ -620,6 +582,7 @@ def format_sslscan(parsed: dict) -> None:
         console.print(f"\n  [red]Weak protocols:[/red] {', '.join(weak_protos)}")
     console.print()
 
+
 def format_onesixtyone(parsed: dict) -> None:
     communities = parsed.get("communities", [])
     console.print(Panel(
@@ -637,6 +600,7 @@ def format_onesixtyone(parsed: dict) -> None:
             table.add_row(c["ip"], c["community"], c["info"])
         console.print(table)
     console.print()
+
 
 def format_dnsrecon(parsed: dict) -> None:
     subs   = parsed.get("subdomains", [])
@@ -664,14 +628,6 @@ def format_dnsrecon(parsed: dict) -> None:
             table.add_row(s["subdomain"], s["ip"])
         console.print(table)
     console.print()
-
-FORMATTERS.update({
-    "whatweb":      format_whatweb,
-    "wafw00f":      format_wafw00f,
-    "sslscan":      format_sslscan,
-    "onesixtyone":  format_onesixtyone,
-    "dnsrecon":     format_dnsrecon,
-})
 
 
 def format_nuclei(parsed: dict) -> None:
@@ -736,9 +692,8 @@ def format_nuclei(parsed: dict) -> None:
         sev   = f.get("severity", "info")
         color = SEV_COLORS.get(sev, "white")
         icon  = SEV_ICONS.get(sev, "")
-        cvss  = f.get("cvss_score", "")
-        cves  = f.get("cve_id", [])
         name  = f.get("name", f.get("template", ""))[:26]
+        cves  = f.get("cve_id", [])
         cve_str = f" [{cves[0]}]" if cves else ""
 
         table.add_row(
@@ -771,6 +726,69 @@ def format_nuclei(parsed: dict) -> None:
 
     console.print()
 
-FORMATTERS.update({
+
+def format_msfvenom(parsed: dict) -> None:
+    """Format msfvenom results."""
+    if parsed.get("success"):
+        output_file = parsed.get("output_file", "")
+        console.print(Panel(
+            f"[green]✓ Payload generated successfully![/green]\n\n"
+            f"[dim]Saved to:[/dim] [cyan]{output_file}[/cyan]\n\n"
+            f"[yellow]💡 Next steps:[/yellow]\n"
+            f"  1. Start listener: [cyan]nc -lvnp 4444[/cyan] (or use msfconsole)\n"
+            f"  2. Transfer payload to target\n"
+            f"  3. Execute on target\n"
+            f"  4. Catch the shell!\n\n"
+            f"[dim]Example listener:[/dim] [cyan]nc -lvnp 4444[/cyan]",
+            title="[bold cyan]MSFVenom Results[/bold cyan]",
+            border_style="green",
+        ))
+    else:
+        console.print(Panel(
+            f"[red]Payload generation failed[/red]\n\n"
+            f"[dim]Error output:[/dim]\n{parsed.get('raw', '')[:500]}",
+            title="[bold red]MSFVenom Error[/bold red]",
+            border_style="red",
+        ))
+    console.print()
+
+
+# ── Dispatcher ────────────────────────────────────────────────────────────────
+
+FORMATTERS = {
+    "nmap": format_nmap,
+    "nikto": format_nikto,
+    "enum4linux": format_enum4linux,
+    "ffuf": format_ffuf,
+    "sqlmap": format_sqlmap,
+    "gobuster": format_gobuster,
+    "wpscan": format_wpscan,
+    "smbclient": format_smbclient,
+    "dnsenum": format_dnsenum,
+    "curl": format_curl,
+    "hashcat": format_hashcat,
+    "whatweb": format_whatweb,
+    "wafw00f": format_wafw00f,
+    "sslscan": format_sslscan,
+    "onesixtyone": format_onesixtyone,
+    "dnsrecon": format_dnsrecon,
     "nuclei": format_nuclei,
-})
+    "msfvenom": format_msfvenom,
+}
+
+
+def format_results(tool_name: str, parsed: dict) -> None:
+    """Dispatch to the correct formatter for *tool_name*."""
+    if tool_name == "privesc":
+        from kernox.utils.privesc_formatter import format_privesc
+        format_privesc(parsed)
+        return
+    formatter = FORMATTERS.get(tool_name)
+    if formatter:
+        formatter(parsed)
+    else:
+        console.print(Panel(
+            json.dumps(parsed, indent=2, default=str),
+            title=f"[cyan]{tool_name} Results[/cyan]",
+            border_style="cyan",
+        ))
