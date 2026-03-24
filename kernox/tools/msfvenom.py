@@ -14,7 +14,7 @@ console = Console()
 
 class MsfvenomTool:
     name = "msfvenom"
-    _authorization_shown = False
+    # _authorization_shown = False
 
     def build_command(self, **kwargs) -> str:
         """Build msfvenom command."""
@@ -25,14 +25,14 @@ class MsfvenomTool:
         output = kwargs.get("output", "")
 
         # Show authorization warning only once per session
-        if not MsfvenomTool._authorization_shown:
-            console.print(Panel(
-                "[dim]Remember: Only use on systems you have permission to test[/dim]",
-                title="[bold yellow]Authorized Use Only[/bold yellow]",
-                border_style="yellow",
-                box=box.ROUNDED,
-            ))
-            MsfvenomTool._authorization_shown = True
+        # if not MsfvenomTool._authorization_shown:
+        #     console.print(Panel(
+        #         "[dim]Remember: Only use on systems you have permission to test[/dim]",
+        #         title="[bold yellow]Authorized Use Only[/bold yellow]",
+        #         border_style="yellow",
+        #         box=box.ROUNDED,
+        #     ))
+        #     MsfvenomTool._authorization_shown = True
 
         # If no payload, ask interactively
         if not payload or "please provide" in payload.lower():
