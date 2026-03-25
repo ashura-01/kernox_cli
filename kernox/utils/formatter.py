@@ -776,6 +776,63 @@ FORMATTERS = {
     "msfvenom": format_msfvenom,
 }
 
+def format_mail_crawler(parsed: dict) -> None:
+    """Format mail crawler results."""
+    if not parsed.get("success"):
+        console.print("[red]Crawl failed[/red]")
+        return
+    
+    emails = parsed.get("emails", [])
+    pages = parsed.get("pages_crawled", 0)
+    target = parsed.get("target", "unknown")
+    
+    # Header
+    header = Text()
+    header.append("  Target: ", style="dim")
+    header.append(f"{target}\n", style="cyan")
+    header.append("  Pages crawled: ", style="dim")
+    header.append(f"{pages}\n", style="bold cyan")
+    header.append("  Emails found: ", style="dim")
+    header.append(f"{len(emails)}", style="bold green")
+    
+    console.print(Panel(header, title="[bold cyan]📧 Email Harvesting Results[/bold cyan]",
+                        border_style="cyan", box=box.ROUNDED))
+    
+    if emails:
+        # Create a nice table
+        table = Table(show_header=True, header_style="bold magenta",
+                      box=box.SIMPLE_HEAVY, border_style="dim")
+        table.add_column("#", width=4, style="dim")
+        table.add_column("Email", style="bold green")
+        table.add_column("Domain", style="dim")
+        
+        for i, email in enumerate(emails[:100], 1):
+            domain = email.split('@')[-1] if '@' in email else ""
+            table.add_row(str(i), email, domain)
+        
+        console.print(table)
+        
+        if len(emails) > 100:
+            console.print(f"[dim]... and {len(emails)-100} more emails[/dim]")
+        
+        # Summary panel
+        console.print(Panel(
+            f"[bold green]Total: {len(emails)} unique emails[/bold green]\n"
+            f"[dim]Use these for OSINT, phishing tests, or recon[/dim]",
+            title="📊 Summary",
+            border_style="green",
+            box=box.ROUNDED
+        ))
+    else:
+        console.print("[yellow]No emails found[/yellow]")
+    
+    console.print()
+
+# Add to FORMATTERS
+FORMATTERS.update({
+    # ... existing ...
+    "mail_crawler": format_mail_crawler,
+})
 
 def format_results(tool_name: str, parsed: dict) -> None:
     """Dispatch to the correct formatter for *tool_name*."""

@@ -58,6 +58,7 @@ from kernox.utils.privesc_formatter import format_privesc
 from kernox.utils.formatter import format_results
 from kernox.utils.report_generator import generate_pdf_report
 from kernox.tools.msfvenom import MsfvenomTool
+from kernox.tools.mail_crawler import MailCrawlerTool
 
 console = Console()
 
@@ -170,11 +171,20 @@ msfvenom:
     - "generate windows reverse shell" → Ask for LHOST/LPORT, generate payload
     - "generate linux payload" → Ask for LHOST/LPORT, generate payload
 
+mail_crawler:
+  args: target (URL), max_pages (optional, default 200)
+  Use for harvesting email addresses from websites.
+  Crawls the target domain and extracts emails from all linked pages.
+  Examples:
+    - "crawl emails from example.com"
+    - "harvest emails from http://target.com"
+
 CHAINING RULES:
 - nmap finds port 80/443 → suggest nikto + ffuf + curl
 - nmap finds port 139/445 → suggest enum4linux + smbclient
 - nmap finds WordPress → suggest wpscan
 - nmap finds MySQL/PostgreSQL → suggest sqlmap
+- mail_crawler finds emails → suggest OSINT tools for further research
 - nikto finds WordPress → suggest wpscan
 - ffuf finds login page → suggest sqlmap + hydra
 - wpscan finds users → suggest hashcat on found hashes
@@ -234,6 +244,7 @@ class Orchestrator:
             "nuclei":     NucleiTool(),
             "privesc":    PrivescTool(),
             "msfvenom":   MsfvenomTool(), 
+            "mail_crawler": MailCrawlerTool(),
         }
         self._history: list[dict] = []
 
@@ -498,6 +509,17 @@ Based on the context, create a plan to help the user.
             console.print(f"[red]Unknown tool: {tool_name}[/red]")
             return None
 
+        # Special handling for mail_crawler (Python-based, no shell command)
+        if tool_name == "mail_crawler":
+            console.print(f"[bold magenta]\n── {tool_name.upper()} ──[/bold magenta]")
+            # Call the tool directly
+            result = tool.run_direct(**args)
+            parsed = result
+            format_results(tool_name, parsed)
+            self._state.add_tool_result(tool=tool_name, target=args.get("target", ""), parsed=parsed)
+            return parsed, None
+
+        # For all other tools, build command and run via executor
         command = tool.build_command(**args)
         console.print(f"[bold magenta]\n── {tool_name.upper()} ──[/bold magenta]")
         result = self._executor.run(

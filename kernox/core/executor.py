@@ -28,49 +28,51 @@ console = Console()
 
 # Map tool names to their binary names
 TOOL_BINARIES = {
-    "nmap":         "nmap",
-    "ffuf":         "ffuf",
-    "gobuster":     "gobuster",
-    "sqlmap":       "sqlmap",
-    "nikto":        "nikto",
-    "enum4linux":   "enum4linux",
-    "wpscan":       "wpscan",
-    "smbclient":    "smbclient",
-    "dnsenum":      "dnsenum",
-    "curl":         "curl",
-    "hashcat":      "hashcat",
-    "whatweb":      "whatweb",
-    "wafw00f":      "wafw00f",
-    "sslscan":      "sslscan",
-    "onesixtyone":  "onesixtyone",
-    "dnsrecon":     "dnsrecon",
-    "nuclei":       "nuclei",
-    "ssh":          "ssh",
-    "sshpass":      "sshpass",
+    "nmap": "nmap",
+    "ffuf": "ffuf",
+    "gobuster": "gobuster",
+    "sqlmap": "sqlmap",
+    "nikto": "nikto",
+    "enum4linux": "enum4linux",
+    "wpscan": "wpscan",
+    "smbclient": "smbclient",
+    "dnsenum": "dnsenum",
+    "curl": "curl",
+    "hashcat": "hashcat",
+    "whatweb": "whatweb",
+    "wafw00f": "wafw00f",
+    "sslscan": "sslscan",
+    "onesixtyone": "onesixtyone",
+    "dnsrecon": "dnsrecon",
+    "nuclei": "nuclei",
+    "ssh": "ssh",
+    "sshpass": "sshpass",
     "msfvenom": "msfvenom",
+    "mail_crawler": "python3",  # Uses Python, not a binary
 }
 
 # Install hints per tool
 INSTALL_HINTS = {
-    "nmap":         "sudo apt install nmap",
-    "ffuf":         "sudo apt install ffuf",
-    "gobuster":     "sudo apt install gobuster",
-    "sqlmap":       "sudo apt install sqlmap",
-    "nikto":        "sudo apt install nikto",
-    "enum4linux":   "sudo apt install enum4linux",
-    "wpscan":       "sudo apt install wpscan  OR  gem install wpscan",
-    "smbclient":    "sudo apt install smbclient",
-    "dnsenum":      "sudo apt install dnsenum",
-    "curl":         "sudo apt install curl",
-    "hashcat":      "sudo apt install hashcat",
-    "whatweb":      "sudo apt install whatweb",
-    "wafw00f":      "pip install wafw00f  OR  sudo apt install wafw00f",
-    "sslscan":      "sudo apt install sslscan",
-    "onesixtyone":  "sudo apt install onesixtyone",
-    "dnsrecon":     "sudo apt install dnsrecon  OR  pip install dnsrecon",
-    "nuclei":       "sudo apt install nuclei  OR  go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest",
-    "sshpass":      "sudo apt install sshpass",
+    "nmap": "sudo apt install nmap",
+    "ffuf": "sudo apt install ffuf",
+    "gobuster": "sudo apt install gobuster",
+    "sqlmap": "sudo apt install sqlmap",
+    "nikto": "sudo apt install nikto",
+    "enum4linux": "sudo apt install enum4linux",
+    "wpscan": "sudo apt install wpscan  OR  gem install wpscan",
+    "smbclient": "sudo apt install smbclient",
+    "dnsenum": "sudo apt install dnsenum",
+    "curl": "sudo apt install curl",
+    "hashcat": "sudo apt install hashcat",
+    "whatweb": "sudo apt install whatweb",
+    "wafw00f": "pip install wafw00f  OR  sudo apt install wafw00f",
+    "sslscan": "sudo apt install sslscan",
+    "onesixtyone": "sudo apt install onesixtyone",
+    "dnsrecon": "sudo apt install dnsrecon  OR  pip install dnsrecon",
+    "nuclei": "sudo apt install nuclei  OR  go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest",
+    "sshpass": "sudo apt install sshpass",
     "msfvenom": "sudo apt install metasploit-framework",
+    "mail_crawler": "pip install beautifulsoup4 requests",
 }
 
 
@@ -176,7 +178,9 @@ class Executor:
 
         # 2. Optional confirmation — skip if tool handles its own interaction
         if not skip_confirm and self._cfg.get("confirm_before_exec") == "1":
-            console.print(f"\n[bold yellow]⚡ About to run:[/bold yellow] {command}...\n")
+            console.print(
+                f"\n[bold yellow]⚡ About to run:[/bold yellow] {command}...\n"
+            )
             if not Confirm.ask("Execute?", default=True):
                 console.print("[yellow]Skipped.[/yellow]")
                 return ExecutionResult(
@@ -192,7 +196,7 @@ class Executor:
         # 3. Execute
         # Special case: privesc SSH already ran via os.system, output embedded in command
         if command.startswith("__PRIVESC_SSH_DONE__:"):
-            output = command[len("__PRIVESC_SSH_DONE__:"):]
+            output = command[len("__PRIVESC_SSH_DONE__:") :]
             console.print("[green]✓ SSH privesc completed[/green]")
             return ExecutionResult(
                 command="ssh privesc",
@@ -233,6 +237,7 @@ class Executor:
                 # Silent mode — run in background, show spinner
                 from rich.live import Live
                 from rich.spinner import Spinner
+
                 tool_label = tool_name.upper()
                 with Live(
                     Spinner("dots", text=f"[cyan]Running {tool_label}...[/cyan]"),

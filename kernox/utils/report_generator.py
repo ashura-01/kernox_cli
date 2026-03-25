@@ -500,6 +500,45 @@ def _write_tool_section_light(story, tool, parsed, body, code, muted,
                 ]))
                 story.append(t)
 
+    elif tool == "mail_crawler":
+        emails = parsed.get("emails", [])
+        pages = parsed.get("pages_crawled", 0)
+        target = parsed.get("target", "unknown")
+        
+        story.append(Paragraph(f"<b>Target:</b> {target}", body))
+        story.append(Paragraph(f"<b>Pages crawled:</b> {pages}", body))
+        story.append(Paragraph(f"<b>Total emails:</b> {len(emails)}", body))
+        story.append(Spacer(1, 0.2*cm))
+        
+        if emails:
+            story.append(Paragraph("<b>Emails Found:</b>", h2))
+            tdata = [["#", "Email", "Domain"]]
+            for i, email in enumerate(emails[:100], 1):
+                domain = email.split('@')[-1] if '@' in email else ""
+                tdata.append([str(i), email, domain])
+            
+            t = Table(tdata, colWidths=[1*cm, 6*cm, 4*cm])
+            t.setStyle(TableStyle([
+                ("BACKGROUND", (0,0), (-1,0), accent),
+                ("TEXTCOLOR", (0,0), (-1,0), white),
+                ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+                ("FONTSIZE", (0,0), (-1,-1), 8),
+                ("TEXTCOLOR", (0,1), (-1,-1), text),
+                ("ROWBACKGROUNDS", (0,1), (-1,-1), [light, white]),
+                ("GRID", (0,0), (-1,-1), 0.3, border),
+                ("LEFTPADDING", (0,0), (-1,-1), 4),
+                ("TOPPADDING", (0,0), (-1,-1), 3),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 3),
+            ]))
+            story.append(t)
+            
+            if len(emails) > 100:
+                story.append(Paragraph(f"<i>... and {len(emails)-100} more emails</i>", muted))
+        else:
+            story.append(Paragraph("No emails found.", body))
+        
+        story.append(Spacer(1, 0.2*cm))
+
     elif tool == "nikto":
         story.append(Paragraph(
             f"<b>Server:</b> {parsed.get('server','')}  |  "
@@ -609,6 +648,13 @@ def _write_tool_section_light(story, tool, parsed, body, code, muted,
         ))
         for s in parsed.get("subdomains",[])[:20]:
             story.append(Paragraph(f"• {s.get('subdomain','')} → {s.get('ip','')}", body))
+
+    elif tool == "msfvenom":
+        story.append(Paragraph(f"<b>Payload:</b> {parsed.get('payload', 'generated')}", body))
+        if parsed.get("output_file"):
+            story.append(Paragraph(f"<b>Output:</b> {parsed.get('output_file')}", body))
+        if parsed.get("size"):
+            story.append(Paragraph(f"<b>Size:</b> {parsed.get('size')} bytes", body))
 
     else:
         story.append(Paragraph(str(parsed)[:400], muted))
