@@ -117,8 +117,16 @@ nmap:
     - "scan through firewall" → mode="firewall"
 
 ffuf:
-  args: target (URL), mode (dir/vhost/param/post/custom), wordlist, extensions
-  Use mode="vhost" for virtual host discovery, mode="param" for parameter fuzzing
+  args: target (URL), mode (dir/vhost/param/post/ai/custom), wordlist, extensions
+  Use mode="ai" to let AI choose optimal strategy.
+  Use mode="dir" for directory/file fuzzing (FUZZ in path).
+  Use mode="vhost" for virtual host discovery.
+  Use mode="param" for GET parameter fuzzing.
+  Use mode="post" for POST parameter fuzzing.
+  Examples:
+    - "fuzz example.com" → AI chooses strategy
+    - "find subdomains on test.example.com" → mode="vhost"
+    - "fuzz parameters on https://site.com/page?id=FUZZ" → mode="param"
 
 gobuster:
   args: target, mode (dir/dns/vhost/s3/custom), wordlist
@@ -294,7 +302,8 @@ class Orchestrator:
         self._updater  = StateUpdater(self._state)
         self._tools    = {
             "nmap": NmapTool(ai_client=self._ai),
-            "ffuf":          FfufTool(),
+            # "ffuf":          FfufTool(),
+            "ffuf": FfufTool(ai_client=self._ai),  
             "gobuster":      GobusterTool(),
             "sqlmap":        SqlmapTool(),
             "nikto":         NiktoTool(),
@@ -800,6 +809,46 @@ Rules:
 
         # ── Smart arg enrichment from session state ──────────────────────────
 
+        # ffuf: inject context from whatweb for tech-aware fuzzing
+        if tool_name == "ffuf":
+            context = {
+                "technologies": [],
+                "server": "",
+                "has_login_page": False,
+                "detected_paths": []
+            }
+            for tr in self._state.get_tool_results():
+                if tr.tool == "whatweb":
+                    context["technologies"] = tr.parsed.get("technologies", [])
+                    context["server"] = tr.parsed.get("headers", {}).get("server", "")
+                if tr.tool == "ffuf" and args.get("target") == tr.target:
+                    context["detected_paths"] = [f.get("path") for f in tr.parsed.get("findings", [])[:10]]
+                if tr.tool == "curl":
+                    context["headers"] = tr.parsed.get("headers", {})
+                # Check for login page from previous scans
+                if tr.tool == "whatweb" and "login" in str(tr.parsed.get("technologies", [])).lower():
+                    context["has_login_page"] = True
+            args["context"] = context
+
+        # In _run_tool, when calling nikto, pass context from previous findings
+        if tool_name == "nikto":
+            # Build context from whatweb and nmap results
+            context = {
+                "technologies": [],
+                "open_ports": [],
+                "headers": {}
+            }
+            for tr in self._state.get_tool_results():
+                if tr.tool == "whatweb":
+                    context["technologies"] = tr.parsed.get("technologies", [])
+                    context["headers"] = tr.parsed.get("headers", {})
+                if tr.tool == "nmap":
+                    for host in tr.parsed.get("hosts", []):
+                        for port in host.get("ports", []):
+                            if port.get("state") == "open":
+                                context["open_ports"].append(port.get("port"))
+            args["context"] = context
+
         # nuclei: inject tags from detected tech (whatweb/wpscan) for targeted scans
         if tool_name == "nuclei" and not args.get("flags"):
             known_tech: set = set()
@@ -922,13 +971,13 @@ Rules:
                         "description": finding.get("description", ""),
                     })
 
-        elif tool_name == "nikto":
-            for finding in parsed.get("findings", [])[:5]:
-                vulnerabilities.append({
-                    "name": finding[:80],
-                    "severity": "medium",
-                    "description": finding,
-                })
+        # elif tool_name == "nikto":
+        #     for finding in parsed.get("findings", [])[:5]:
+        #         vulnerabilities.append({
+        #             "name": finding[:80],
+        #             "severity": "medium",
+        #             "description": finding,
+        #         })
 
         elif tool_name == "sqlmap" and parsed.get("vulnerable"):
             vulnerabilities.append({
