@@ -51,3 +51,4 @@ Thumbs.db
 .env
 secrets.txt
 api_keys.txt
+.venv
