@@ -2,15 +2,20 @@
 kernox.engine.state  –  In-memory session state for a Kernox run.
 
 Stores everything discovered so far: hosts, open ports, found paths,
-SQL injection results, etc. Survives across tool invocations within
-one session but is intentionally NOT persisted to disk.
+SQL injection results, etc.  State is now persisted to disk as a JSON
+snapshot after every tool run, and can be restored on next launch.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
+
+# Sessions directory — one JSON file per session
+SESSIONS_DIR = Path.home() / ".kernox" / "sessions"
 
 
 @dataclass
@@ -57,6 +62,79 @@ class SessionState:
         self._tool_results: list[ToolResult] = []        # tool execution results
         self._ai_insights: list[AIInsight] = []          # AI vulnerability explanations
         self._session_start: str = datetime.now().isoformat()
+        self._session_file: Optional[Path] = None
+
+    # ── Persistence ──────────────────────────────────────────────────────────
+
+    def _session_path(self) -> Path:
+        """Return the path for this session's snapshot file."""
+        if self._session_file is None:
+            SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self._session_file = SESSIONS_DIR / f"session_{ts}.json"
+        return self._session_file
+
+    def save(self) -> None:
+        """Persist current state to disk as a JSON snapshot."""
+        try:
+            path = self._session_path()
+            path.write_text(
+                json.dumps(self.to_dict(), indent=2, default=str),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass  # Never crash on a save failure
+
+    @classmethod
+    def load(cls, path: Path) -> "SessionState":
+        """Restore a SessionState from a saved JSON snapshot."""
+        state = cls()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            state._session_start = data.get("session_start", datetime.now().isoformat())
+            state._session_file = path  # Continue writing to the same file
+
+            for ip, h in data.get("hosts", {}).items():
+                state._hosts[ip] = HostInfo(
+                    ip=h["ip"],
+                    hostname=h.get("hostname", ""),
+                    os=h.get("os", ""),
+                    ports=h.get("ports", []),
+                    tags=h.get("tags", []),
+                )
+
+            state._paths = data.get("paths", {})
+            state._vulns = data.get("vulns", {})
+            state._notes = data.get("notes", [])
+
+            for r in data.get("tool_results", []):
+                state._tool_results.append(ToolResult(
+                    tool=r["tool"],
+                    target=r["target"],
+                    parsed=r["parsed"],
+                    timestamp=r.get("timestamp", ""),
+                    raw_output=r.get("raw_output", ""),
+                ))
+
+            for i in data.get("ai_insights", []):
+                state._ai_insights.append(AIInsight(
+                    vulnerability=i["vulnerability"],
+                    severity=i["severity"],
+                    tool=i["tool"],
+                    target=i["target"],
+                    ai_explanation=i.get("explanation", {}),
+                    timestamp=i.get("timestamp", ""),
+                ))
+        except Exception:
+            pass  # Return a fresh state if the file is corrupt
+        return state
+
+    @staticmethod
+    def list_sessions() -> list[Path]:
+        """Return saved session files, newest first."""
+        if not SESSIONS_DIR.exists():
+            return []
+        return sorted(SESSIONS_DIR.glob("session_*.json"), reverse=True)
 
     # ── Tool Results ─────────────────────────────────────────────────────────
 
@@ -68,6 +146,7 @@ class SessionState:
             parsed=parsed,
             raw_output=raw_output[:5000]
         ))
+        self.save()  # Auto-save after every tool result
 
     def get_tool_results(self, tool: Optional[str] = None) -> list[ToolResult]:
         """Get tool results, optionally filtered by tool name."""
@@ -77,7 +156,7 @@ class SessionState:
 
     # ── AI Insights ──────────────────────────────────────────────────────────
 
-    def add_ai_insight(self, vulnerability: str, severity: str, tool: str, 
+    def add_ai_insight(self, vulnerability: str, severity: str, tool: str,
                        target: str, explanation: dict) -> None:
         """Store AI-generated vulnerability explanation."""
         self._ai_insights.append(AIInsight(
@@ -87,6 +166,7 @@ class SessionState:
             target=target,
             ai_explanation=explanation
         ))
+        self.save()
 
     def get_ai_insights(self, severity: Optional[str] = None) -> list[AIInsight]:
         """Get AI insights, optionally filtered by severity."""
@@ -173,6 +253,7 @@ class SessionState:
                     "target": r.target,
                     "parsed": r.parsed,
                     "timestamp": r.timestamp,
+                    "raw_output": r.raw_output,
                 }
                 for r in self._tool_results
             ],

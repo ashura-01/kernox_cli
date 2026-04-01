@@ -4,6 +4,7 @@ kernox.ai.api  –  API-based AI clients (Anthropic Claude, OpenAI-compatible, G
 
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 import requests
@@ -13,12 +14,47 @@ from kernox.ai.base import BaseAIClient
 
 console = Console()
 
+# Retry settings
+_MAX_RETRIES = 3
+_RETRY_DELAY = 2.0  # seconds, doubles each attempt
+
+
+def _retry_request(fn, retries: int = _MAX_RETRIES, delay: float = _RETRY_DELAY):
+    """Run fn() with exponential-backoff retries on transient errors."""
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            return fn()
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            last_exc = exc
+            if attempt < retries:
+                wait = delay * (2 ** (attempt - 1))
+                console.print(
+                    f"[yellow]⚠ API connection error (attempt {attempt}/{retries}). "
+                    f"Retrying in {wait:.0f}s…[/yellow]"
+                )
+                time.sleep(wait)
+        except requests.HTTPError as exc:
+            # Only retry on 5xx server errors, not 4xx client errors
+            if exc.response is not None and exc.response.status_code >= 500:
+                last_exc = exc
+                if attempt < retries:
+                    wait = delay * (2 ** (attempt - 1))
+                    console.print(
+                        f"[yellow]⚠ Server error {exc.response.status_code} "
+                        f"(attempt {attempt}/{retries}). Retrying in {wait:.0f}s…[/yellow]"
+                    )
+                    time.sleep(wait)
+            else:
+                raise
+    raise last_exc
+
 
 class ClaudeClient(BaseAIClient):
     """Anthropic Claude via the official Messages API."""
 
     API_URL = "https://api.anthropic.com/v1/messages"
-    DEFAULT_MODEL = "claude-opus-4-5"
+    DEFAULT_MODEL = "claude-sonnet-4-5"  # claude-sonnet-4-5 is the correct API model string
 
     def __init__(self, api_key: str, model: str = DEFAULT_MODEL) -> None:
         self._api_key = api_key
@@ -45,13 +81,17 @@ class ClaudeClient(BaseAIClient):
         if system:
             payload["system"] = system
 
-        try:
+        def _do_request():
             resp = requests.post(self.API_URL, headers=headers, json=payload, timeout=60)
             resp.raise_for_status()
             data = resp.json()
             return data["content"][0]["text"]
+
+        try:
+            return _retry_request(_do_request)
         except requests.HTTPError as exc:
-            console.print(f"[red]Claude API HTTP error: {exc} – {resp.text[:300]}[/red]")
+            resp_text = exc.response.text[:300] if exc.response is not None else ""
+            console.print(f"[red]Claude API HTTP error: {exc} – {resp_text}[/red]")
             return f"Error: {exc}"
         except Exception as exc:
             console.print(f"[red]Claude API error: {exc}[/red]")
@@ -94,7 +134,8 @@ class OpenAICompatibleClient(BaseAIClient):
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
-        try:
+
+        def _do_request():
             resp = requests.post(
                 f"{self._base_url}/chat/completions",
                 headers=headers,
@@ -104,6 +145,9 @@ class OpenAICompatibleClient(BaseAIClient):
             resp.raise_for_status()
             data = resp.json()
             return data["choices"][0]["message"]["content"]
+
+        try:
+            return _retry_request(_do_request)
         except requests.HTTPError as exc:
             console.print(f"[red]OpenAI API HTTP error: {exc}[/red]")
             return f"Error: {exc}"
@@ -155,7 +199,7 @@ class GeminiClient(BaseAIClient):
                 "parts": [{"text": system}]
             }
 
-        try:
+        def _do_request():
             resp = requests.post(
                 url,
                 params={"key": self._api_key},
@@ -165,8 +209,12 @@ class GeminiClient(BaseAIClient):
             resp.raise_for_status()
             data = resp.json()
             return data["candidates"][0]["content"]["parts"][0]["text"]
+
+        try:
+            return _retry_request(_do_request)
         except requests.HTTPError as exc:
-            console.print(f"[red]Gemini API HTTP error: {exc} – {resp.text[:300]}[/red]")
+            resp_text = exc.response.text[:300] if exc.response is not None else ""
+            console.print(f"[red]Gemini API HTTP error: {exc} – {resp_text}[/red]")
             return f"Error: {exc}"
         except (KeyError, IndexError) as exc:
             console.print(f"[red]Gemini response parse error: {exc}[/red]")

@@ -21,11 +21,11 @@ console = Console()
 
 # Python packages required by Kernox
 REQUIRED_PACKAGES = {
-    "rich":         "rich",
+    "rich":           "rich",
     "prompt_toolkit": "prompt_toolkit",
-    "requests":     "requests",
-    "cryptography": "cryptography",
-    "reportlab":    "reportlab",
+    "requests":       "requests",
+    "cryptography":   "cryptography",
+    "reportlab":      "reportlab",
 }
 
 
@@ -51,12 +51,12 @@ BANNER = r"""
 ██ ▄█▀▓█████  ██▀███   ███▄    █  ▒█████  ▒██   ██▒
 ██▄█▒ ▓█   ▀ ▓██ ▒ ██▒ ██ ▀█   █ ▒██▒  ██▒▒▒ █ █ ▒░
 ▓███▄░ ▒███   ▓██ ░▄█ ▒▓██  ▀█ ██▒▒██░  ██▒░░  █   ░
-▓██ █▄ ▒▓█  ▄ ▒██▀▀█▄  ▓██▒  ▐▌██▒▒██   ██░ ░ █ █ ▒ 
+▓██ █▄ ▒▓█  ▄ ▒██▀▀█▄  ▓██▒  ▐▌██▒▒██   ██░ ░ █ █ ▒
 ▒██▒ █▄░▒████▒░██▓ ▒██▒▒██░   ▓██░░ ████▓▒░▒██▒ ▒██▒
 ▒ ▒▒ ▓▒░░ ▒░ ░░ ▒▓ ░▒▓░░ ▒░   ▒ ▒ ░ ▒░▒░▒░ ▒▒ ░ ░▓ ░
 ░ ░▒ ▒░ ░ ░  ░  ░▒ ░ ▒░░ ░░   ░ ▒░  ░ ▒ ▒░ ░░   ░▒ ░
-░ ░░ ░    ░     ░░   ░    ░   ░ ░ ░ ░ ░ ▒   ░    ░  
-░  ░      ░  ░   ░              ░     ░ ░   ░    ░  
+░ ░░ ░    ░     ░░   ░    ░   ░ ░ ░ ░ ░ ▒   ░    ░
+░  ░      ░  ░   ░              ░     ░ ░   ░    ░
          >>> K E R N O X <<<
 """
 
@@ -86,12 +86,31 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version",
         action="version",
-        version="%(prog)s 0.1.0",
+        version="%(prog)s 0.2.0",
     )
     parser.add_argument(
         "--reset",
         action="store_true",
         help="Reset all Kernox configuration and start fresh.",
+    )
+    # ── Headless / scripting flags ────────────────────────────────────────────
+    parser.add_argument(
+        "--target",
+        metavar="TARGET",
+        help=(
+            "Run non-interactively against TARGET (IP, URL, or domain). "
+            "Use with --mode to specify the action."
+        ),
+    )
+    parser.add_argument(
+        "--mode",
+        metavar="MODE",
+        default="web recon",
+        help=(
+            "Action to perform in headless mode (default: 'web recon'). "
+            "Examples: 'web recon', 'scan', 'full recon'. "
+            "Any natural-language command accepted by the REPL works here."
+        ),
     )
     return parser
 
@@ -113,6 +132,17 @@ def main() -> None:
     # ── Config flag ─────────────────────────────────────────────────────────
     if args.config:
         open_config_menu()
+        return
+
+    # ── Headless / scripting mode (--target) ─────────────────────────────────
+    if args.target:
+        config = ConfigStore()
+        orchestrator = Orchestrator(config)
+        try:
+            orchestrator.run_headless(target=args.target, mode=args.mode)
+        except KeyboardInterrupt:
+            console.print("\n\n[yellow]Headless session ended.[/yellow]")
+            sys.exit(0)
         return
 
     # ── First-run detection ─────────────────────────────────────────────────

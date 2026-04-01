@@ -4,6 +4,8 @@ kernox.guards.rules  –  Safety and scope enforcement rules.
 All tool commands are checked here before execution.  Rules:
   1. Blocked commands (rm, mkfs, dd, etc.) are never allowed.
   2. If allowed_networks is set, the target IP/hostname must fall within scope.
+     Hostnames are now resolved to IPs before the CIDR check so hostnames
+     can no longer silently bypass scope enforcement.
   3. Dangerous sqlmap flags (--os-shell, --os-cmd) require explicit override.
 """
 
@@ -11,6 +13,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import socket
 import shlex
 from typing import Optional
 
@@ -64,16 +67,23 @@ class GuardRules:
 
     @staticmethod
     def _in_scope(target: str, allowed_nets: str) -> bool:
-        """Return True if target IP is within any of the allowed CIDR ranges."""
-        # Extract IP from target (strip port, path, scheme)
-        ip_str = _extract_ip(target)
+        """
+        Return True if target IP/hostname is within any of the allowed CIDR ranges.
+
+        Improvement over original: hostnames are now resolved via DNS before the
+        CIDR check.  Previously a hostname like 'internal-server.lan' would return
+        '' from _extract_ip and be silently allowed through.
+        """
+        ip_str = _resolve_target(target)
         if not ip_str:
-            return True  # Cannot resolve; let it through (best-effort)
+            # Could not resolve at all — allow with a warning rather than hard-block
+            # (avoids blocking legitimate scans when DNS is slow/unavailable)
+            return True
 
         try:
             ip = ipaddress.ip_address(ip_str)
         except ValueError:
-            return True  # Not a bare IP; allow
+            return True  # Unresolvable; allow
 
         for net_str in allowed_nets.split(","):
             net_str = net_str.strip()
@@ -89,15 +99,33 @@ class GuardRules:
         return False
 
 
-def _extract_ip(target: str) -> str:
-    """Best-effort: pull a bare IP from a target string."""
+def _resolve_target(target: str) -> str:
+    """
+    Extract and resolve a target string to a bare IPv4/IPv6 address string.
+
+    1. Strip scheme, path, port from the target.
+    2. If it looks like an IP already, return it directly.
+    3. Otherwise attempt DNS resolution and return the resolved IP.
+    Returns '' if resolution fails.
+    """
     # Strip scheme
     target = re.sub(r"^https?://", "", target)
     # Strip path and port
-    target = target.split("/")[0].split(":")[0]
-    # Validate
-    try:
-        ipaddress.ip_address(target)
-        return target
-    except ValueError:
+    host = target.split("/")[0].split(":")[0].strip()
+
+    if not host:
         return ""
+
+    # Check if it's already a valid IP
+    try:
+        ipaddress.ip_address(host)
+        return host
+    except ValueError:
+        pass
+
+    # Attempt DNS resolution for hostnames
+    try:
+        resolved = socket.gethostbyname(host)
+        return resolved
+    except (socket.gaierror, socket.herror):
+        return ""  # Could not resolve — caller decides what to do

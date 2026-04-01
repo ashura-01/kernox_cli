@@ -79,7 +79,8 @@ def _change_backend(cfg: ConfigStore, ks: KeyStore) -> None:
         cfg.set("ollama_url", url)
         cfg.set("ollama_model", model)
     elif backend == "claude":
-        model = Prompt.ask("Claude model", default=cfg.get("claude_model") or "claude-opus-4-5")
+        console.print("[dim]Available: claude-sonnet-4-5, claude-opus-4-5, claude-haiku-4-5-20251001[/dim]")
+        model = Prompt.ask("Claude model", default=cfg.get("claude_model") or "claude-sonnet-4-5")
         cfg.set("claude_model", model)
     elif backend == "openai":
         url = Prompt.ask("Base URL", default=cfg.get("openai_base_url") or "https://api.openai.com/v1")

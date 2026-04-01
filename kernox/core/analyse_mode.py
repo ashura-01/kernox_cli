@@ -4,6 +4,7 @@ kernox.core.analyse_mode  –  Paste & analyse reverse shell / privesc output.
 When you have a reverse shell (nc -lnvp 4444) on an authorized CTF/lab target,
 you can run commands manually on the target, paste the output here, and Kernox
 will analyse it for privilege escalation paths — same as LinPEAS but interactive.
+Now with AI-powered explanation of each finding.
 """
 
 from __future__ import annotations
@@ -13,8 +14,11 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
 from rich.text import Text
+from rich.live import Live
+from rich.spinner import Spinner
 from rich import box
 from rich.table import Table
+from rich.markdown import Markdown
 
 from kernox.parsers.privesc_parser import PrivescParser
 from kernox.utils.privesc_formatter import format_privesc
@@ -104,10 +108,67 @@ def run_analyse_mode() -> None:
     # Display full analysis
     format_privesc(parsed)
 
+    # ── AI-powered explanation of top findings ────────────────────────────
+    juicy = parsed.get("juicy_points", [])
+    if juicy and Confirm.ask("\n[bold cyan]Get AI explanation of top findings?[/bold cyan]", default=True):
+        _ai_explain_privesc(parsed, raw_output)
+
     # Export option
     if parsed.get("juicy_points"):
         if Confirm.ask("\nExport findings to file?", default=False):
             _export_findings(parsed)
+
+
+def _ai_explain_privesc(parsed: dict, raw_output: str) -> None:
+    """Use AI to explain the top privesc findings and suggest exploit paths."""
+    try:
+        from kernox.ai.factory import build_ai_client
+        from kernox.config.config_store import ConfigStore
+    except ImportError:
+        console.print("[yellow]AI module not available for explanation.[/yellow]")
+        return
+
+    cfg = ConfigStore()
+    ai = build_ai_client(cfg)
+
+    juicy = parsed.get("juicy_points", [])[:6]
+    if not juicy:
+        return
+
+    findings_text = "\n".join(
+        f"[{j['severity'].upper()}] {j['category']}: {j['title']} — {j.get('path', j.get('detail', ''))}"
+        for j in juicy
+    )
+
+    prompt = f"""You are a penetration tester analysing privilege escalation findings on an authorized target.
+
+TOP FINDINGS:
+{findings_text}
+
+KERNEL / OS: {parsed.get('kernel_version', 'unknown')}
+CURRENT USER: {parsed.get('current_user', 'unknown')}
+
+For the top 3 most critical findings, provide:
+1. A brief explanation of why it's exploitable
+2. The exact command(s) to exploit it (GTFOBins, SUID abuse, sudo -l exploit, etc.)
+3. Expected outcome
+
+Format as clean markdown. Be direct and actionable — this is an authorized pentest/CTF."""
+
+    with Live(Spinner("dots", text="[cyan]AI analysing privesc paths...[/cyan]"), refresh_per_second=10):
+        response = ai.chat(
+            messages=[{"role": "user", "content": prompt}],
+            system="You are a senior penetration tester. Provide clear exploit commands for authorized testing.",
+            max_tokens=800,
+        )
+
+    if response and not response.startswith("Error:"):
+        console.print(Panel(
+            Markdown(response),
+            title="[bold red]🤖 AI — PrivEsc Exploit Paths[/bold red]",
+            border_style="red",
+            box=box.ROUNDED,
+        ))
 
 
 def _export_findings(parsed: dict) -> None:

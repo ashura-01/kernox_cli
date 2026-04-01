@@ -1,12 +1,5 @@
 """
-kernox.core.executor  –  Safe subprocess wrapper for running security tools.
-
-Every tool invocation goes through here.  The executor:
-  1. Checks if the tool binary is installed.
-  2. Applies guard rules before execution.
-  3. Optionally asks the user to confirm.
-  4. Streams or captures stdout/stderr.
-  5. Returns a structured ExecutionResult.
+kernox.core.executor  –  Safe subprocess wrapper with graceful interrupt handling.
 """
 
 from __future__ import annotations
@@ -15,6 +8,8 @@ import subprocess
 import shlex
 import shutil
 import time
+import signal
+import sys
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -47,8 +42,11 @@ TOOL_BINARIES = {
     "nuclei": "nuclei",
     "ssh": "ssh",
     "sshpass": "sshpass",
-    "msfvenom": "msfvenom",
-    "mail_crawler": "python3",  # Uses Python, not a binary
+    "msfvenom":      "msfvenom",
+    "mail_crawler":  "python3",
+    "zapcli":        "zap.sh",
+    "hydra":         "hydra",
+    "theharvester":  "theHarvester",
 }
 
 # Install hints per tool
@@ -70,9 +68,12 @@ INSTALL_HINTS = {
     "onesixtyone": "sudo apt install onesixtyone",
     "dnsrecon": "sudo apt install dnsrecon  OR  pip install dnsrecon",
     "nuclei": "sudo apt install nuclei  OR  go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest",
-    "sshpass": "sudo apt install sshpass",
-    "msfvenom": "sudo apt install metasploit-framework",
-    "mail_crawler": "pip install beautifulsoup4 requests",
+    "sshpass":        "sudo apt install sshpass",
+    "msfvenom":       "sudo apt install metasploit-framework",
+    "mail_crawler":   "pip install beautifulsoup4 requests",
+    "zapcli":         "sudo apt install zaproxy  OR  docker pull ghcr.io/zaproxy/zaproxy:stable",
+    "hydra":          "sudo apt install hydra",
+    "theharvester":   "sudo apt install theharvester  OR  pip install theHarvester",
 }
 
 
@@ -86,22 +87,34 @@ def check_and_warn(tool_name: str) -> bool:
     Check if a tool is installed.
     Warns the user and returns False if not found.
     Returns True if installed or if tool not in known list.
+
+    Special case: zapcli can run via Docker even when zap.sh is missing.
     """
+    if tool_name == "zapcli":
+        import shutil as _shutil
+        if _shutil.which("zap.sh") or _shutil.which("zaproxy") or _shutil.which("docker"):
+            return True
+        hint = INSTALL_HINTS.get(tool_name, "sudo apt install zaproxy")
+        console.print(
+            f"\n[bold red]⚠ ZAP not found:[/bold red] neither [cyan]zap.sh[/cyan] "
+            f"nor [cyan]docker[/cyan] is available.\n"
+            f"  [dim]Install with:[/dim] [bold yellow]{hint}[/bold yellow]\n"
+        )
+        return Confirm.ask("Try running zapcli anyway?", default=False)
+
     binary = TOOL_BINARIES.get(tool_name)
     if not binary:
-        return True  # Unknown tool — let it try
+        return True
 
     if check_tool_installed(binary):
         return True
 
-    # Not installed — warn user
     hint = INSTALL_HINTS.get(tool_name, f"sudo apt install {tool_name}")
     console.print(
         f"\n[bold red]⚠ Tool not installed:[/bold red] [cyan]{binary}[/cyan]\n"
         f"  [dim]Install with:[/dim] [bold yellow]{hint}[/bold yellow]\n"
     )
 
-    # Ask if they want to skip or try anyway
     if Confirm.ask(f"Try running {tool_name} anyway?", default=False):
         return True
 
@@ -117,15 +130,18 @@ class ExecutionResult:
     duration_seconds: float
     blocked: bool = False
     block_reason: str = ""
+    interrupted: bool = False
     extra: dict = field(default_factory=dict)
 
     @property
     def success(self) -> bool:
-        return not self.blocked and self.return_code == 0
+        return not self.blocked and not self.interrupted and self.return_code == 0
 
     def __str__(self) -> str:
         if self.blocked:
             return f"[BLOCKED] {self.block_reason}"
+        if self.interrupted:
+            return "[INTERRUPTED] Tool stopped by user"
         return self.stdout or self.stderr
 
 
@@ -194,7 +210,6 @@ class Executor:
                 )
 
         # 3. Execute
-        # Special case: privesc SSH already ran via os.system, output embedded in command
         if command.startswith("__PRIVESC_SSH_DONE__:"):
             output = command[len("__PRIVESC_SSH_DONE__:") :]
             console.print("[green]✓ SSH privesc completed[/green]")
@@ -211,8 +226,8 @@ class Executor:
         stdout_parts: list[str] = []
         stderr_parts: list[str] = []
 
-        # Determine if raw output should be shown
         show_raw = self._cfg.get("show_raw_output") == "1"
+        interrupted = False
 
         try:
             proc = subprocess.Popen(
@@ -223,32 +238,57 @@ class Executor:
             )
 
             if show_raw:
-                # Stream stdout live (verbose mode)
+                # Stream stdout live with interrupt handling
                 assert proc.stdout is not None
-                for line in proc.stdout:
-                    console.print(line, end="")
-                    stdout_parts.append(line)
-                proc.wait(timeout=timeout)
-                assert proc.stderr is not None
-                stderr_out = proc.stderr.read()
-                if stderr_out:
-                    stderr_parts.append(stderr_out)
+                try:
+                    for line in proc.stdout:
+                        console.print(line, end="")
+                        stdout_parts.append(line)
+                    proc.wait(timeout=timeout)
+                    assert proc.stderr is not None
+                    stderr_out = proc.stderr.read()
+                    if stderr_out:
+                        stderr_parts.append(stderr_out)
+                except KeyboardInterrupt:
+                    console.print("\n[yellow]⚠ Interrupt received - stopping tool...[/yellow]")
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    interrupted = True
             else:
-                # Silent mode — run in background, show spinner
+                # Silent mode with spinner and interrupt handling
                 from rich.live import Live
                 from rich.spinner import Spinner
 
                 tool_label = tool_name.upper()
-                with Live(
-                    Spinner("dots", text=f"[cyan]Running {tool_label}...[/cyan]"),
-                    refresh_per_second=10,
-                ):
-                    out, err = proc.communicate(timeout=timeout)
-                stdout_parts.append(out)
-                if err:
-                    stderr_parts.append(err)
+                try:
+                    with Live(
+                        Spinner("dots", text=f"[cyan]Running {tool_label}... (Ctrl+C to stop)[/cyan]"),
+                        refresh_per_second=10,
+                    ):
+                        out, err = proc.communicate(timeout=timeout)
+                    stdout_parts.append(out)
+                    if err:
+                        stderr_parts.append(err)
+                except KeyboardInterrupt:
+                    console.print("\n[yellow]⚠ Interrupt received - stopping tool...[/yellow]")
+                    proc.terminate()
+                    try:
+                        out, err = proc.communicate(timeout=5)
+                        stdout_parts.append(out)
+                        if err:
+                            stderr_parts.append(err)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        out, err = proc.communicate()
+                        stdout_parts.append(out)
+                        if err:
+                            stderr_parts.append(err)
+                    interrupted = True
 
-            rc = proc.returncode
+            rc = proc.returncode if not interrupted else -2
 
         except FileNotFoundError:
             err_msg = (
@@ -267,6 +307,17 @@ class Executor:
             stderr_parts.append(err_msg)
 
         duration = time.monotonic() - start
+
+        if interrupted:
+            console.print(f"\n[yellow]⏹ Tool stopped by user after {duration:.1f}s[/yellow]")
+            return ExecutionResult(
+                command=command,
+                stdout="".join(stdout_parts),
+                stderr="".join(stderr_parts),
+                return_code=-2,
+                duration_seconds=duration,
+                interrupted=True,
+            )
 
         result = ExecutionResult(
             command=command,
