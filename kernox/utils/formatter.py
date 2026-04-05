@@ -501,77 +501,134 @@ def format_hashcat(parsed: dict) -> None:
 
 
 def format_whatweb(parsed: dict) -> None:
-    """Corrected WhatWeb formatter"""
-    techs = parsed.get("technologies", [])
-    versions = parsed.get("versions", [])
-    status = parsed.get("status_code", "")
-    server = parsed.get("server", "")
-    title = parsed.get("title", "")
-    cookies = parsed.get("cookies", [])
-    country = parsed.get("country", "")
-    redirect = parsed.get("redirect", "")
+    """Complete WhatWeb formatter - shows ALL information"""
+    from rich.console import Console
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.text import Text
+    from rich import box
+    from rich.tree import Tree
+    from rich.syntax import Syntax
+    import json
     
-    # Build version lookup
-    version_map = {v["tech"]: v["version"] for v in versions}
+    console = Console()
     
-    header = Text()
-    header.append("  Target: ", style="dim")
-    header.append(f"{parsed.get('ips', ['?'])[0]}\n", style="cyan")
+    # Build header with all metadata
+    header_lines = []
+    
+    if parsed.get("url"):
+        header_lines.append(f"[dim]URL:[/dim] [cyan]{parsed['url']}[/cyan]")
+    
+    if parsed.get("ip"):
+        header_lines.append(f"[dim]IP:[/dim] [bold cyan]{parsed['ip']}[/bold cyan]")
+    
+    status = parsed.get("status_code")
+    status_text = parsed.get("status_text", "")
     if status:
-        status_color = "green" if "200" in status else "yellow"
-        header.append("  Status: ", style="dim")
-        header.append(f"{status}\n", style=status_color)
-    if server:
-        header.append("  Server: ", style="dim")
-        header.append(f"{server}\n", style="yellow")
-    if title:
-        header.append("  Title: ", style="dim")
-        header.append(f"{title}\n", style="bold white")
-    if redirect:
-        header.append("  Redirect: ", style="dim")
-        header.append(f"{redirect}\n", style="cyan")
-    if country:
-        header.append("  Country: ", style="dim")
-        header.append(f"{country}\n", style="dim")
-    header.append("  Technologies: ", style="dim")
-    header.append(str(len(techs)), style="bold cyan")
+        status_color = "green" if status == 200 else "yellow" if 300 <= status < 400 else "red"
+        header_lines.append(f"[dim]Status:[/dim] [{status_color}]{status} {status_text}[/{status_color}]")
     
-    console.print(Panel(header, title="[bold cyan]WhatWeb Results[/bold cyan]",
-                        border_style="cyan", box=box.ROUNDED))
+    if parsed.get("title"):
+        header_lines.append(f"[dim]Title:[/dim] [bold white]{parsed['title']}[/bold white]")
     
-    if techs:
-        table = Table(show_header=True, header_style="bold magenta",
-                      box=box.SIMPLE_HEAVY, border_style="dim")
-        table.add_column("Technology", style="bold cyan")
-        table.add_column("Version", style="yellow")
-        table.add_column("Details", style="dim")
+    if parsed.get("server"):
+        header_lines.append(f"[dim]Server:[/dim] [yellow]{parsed['server'][:100]}[/yellow]")
+    
+    if parsed.get("powered_by"):
+        header_lines.append(f"[dim]X-Powered-By:[/dim] [yellow]{parsed['powered_by']}[/yellow]")
+    
+    if parsed.get("redirect"):
+        header_lines.append(f"[dim]Redirect:[/dim] [cyan]{parsed['redirect']}[/cyan]")
+    
+    if parsed.get("country"):
+        header_lines.append(f"[dim]Country:[/dim] {parsed['country']}")
+    
+    if parsed.get("cookies"):
+        header_lines.append(f"[dim]Cookies:[/dim] {', '.join(parsed['cookies'])}")
+    
+    header_lines.append(f"\n[dim]Total Plugins:[/dim] [bold cyan]{len(parsed.get('plugins', {}))}[/bold cyan]")
+    header_lines.append(f"[dim]Technologies:[/dim] [bold]{len(parsed.get('technologies', []))}[/bold]")
+    
+    # Main header panel
+    console.print(Panel(
+        "\n".join(header_lines),
+        title="[bold cyan]🔍 WhatWeb Scan Results[/bold cyan]",
+        border_style="cyan",
+        box=box.HEAVY,
+        padding=(1, 2)
+    ))
+    
+    # Table of ALL plugins with their values
+    plugins = parsed.get("plugins", {})
+    if plugins:
+        console.print("\n[bold magenta]📋 All Plugins Detected[/bold magenta]")
         
-        # Known interesting technologies to highlight
-        high_interest = {"PHP", "Apache", "MySQL", "WordPress", "Drupal", "Joomla"}
+        table = Table(
+            show_header=True,
+            header_style="bold magenta",
+            box=box.SIMPLE_HEAVY,
+            border_style="dim",
+            show_lines=True
+        )
+        table.add_column("Plugin", style="bold cyan", width=20)
+        table.add_column("Value", style="white", no_wrap=False)
+        table.add_column("Version", style="yellow", width=15)
         
-        for tech in sorted(techs):
-            version = version_map.get(tech, "")
-            style = "bold red" if tech in high_interest else "bold cyan"
+        # Build version lookup
+        version_map = {v["tech"]: v["version"] for v in parsed.get("versions", [])}
+        
+        # Sort plugins alphabetically
+        for plugin_name in sorted(plugins.keys()):
+            value = plugins[plugin_name]
+            version = version_map.get(plugin_name, "")
             
-            # Get full detail if available
-            detail = ""
-            if tech == "PHP" and version:
-                detail = f"v{version}"
-            elif tech == "Apache" and version:
-                detail = f"v{version}"
-            elif tech == "X-Powered-By":
-                detail = version
-                
-            table.add_row(f"[{style}]{tech}[/{style}]", 
-                         version if version else "[dim]detected[/dim]",
-                         detail)
+            # Truncate long values but show full on hover? 
+            # For now, truncate with indicator
+            display_value = value
+            if len(value) > 80:
+                display_value = value[:77] + "..."
+            
+            # Color code interesting plugins
+            if plugin_name in ["PHP", "Apache", "nginx", "WordPress", "Drupal", "Joomla"]:
+                plugin_display = f"[bold red]{plugin_name}[/bold red]"
+            elif plugin_name in ["X-Powered-By", "HTTPServer", "WebDAV"]:
+                plugin_display = f"[yellow]{plugin_name}[/yellow]"
+            else:
+                plugin_display = f"[cyan]{plugin_name}[/cyan]"
+            
+            version_display = version if version else "[dim]—[/dim]"
+            
+            table.add_row(plugin_display, display_value, version_display)
         
         console.print(table)
     
-    if cookies:
-        console.print("\n[bold magenta]── Cookies ──[/bold magenta]")
-        for c in cookies:
-            console.print(f"  [yellow]🍪[/yellow] {c}")
+    # Versions summary
+    versions = parsed.get("versions", [])
+    if versions:
+        console.print("\n[bold green]📦 Version Summary[/bold green]")
+        version_table = Table(show_header=True, header_style="bold green", box=box.SIMPLE)
+        version_table.add_column("Technology", style="bold cyan")
+        version_table.add_column("Version", style="yellow")
+        version_table.add_column("Full Value", style="dim")
+        
+        for v in versions:
+            tech = v["tech"]
+            version = v["version"]
+            full_value = plugins.get(tech, "")[:50]
+            version_table.add_row(tech, f"[bold]{version}[/bold]", full_value)
+        
+        console.print(version_table)
+    
+    # Emails if found
+    emails = parsed.get("emails", [])
+    if emails:
+        console.print("\n[bold yellow]📧 Emails Found[/bold yellow]")
+        for email in emails:
+            console.print(f"  [cyan]✉[/cyan] {email}")
+    
+    # Raw plugin data as expandable? (for debugging)
+    if len(plugins) > 0:
+        console.print("\n[dim]💡 Tip: Use --verbose to see raw plugin data[/dim]")
     
     console.print()
 
