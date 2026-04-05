@@ -501,50 +501,78 @@ def format_hashcat(parsed: dict) -> None:
 
 
 def format_whatweb(parsed: dict) -> None:
-    techs   = parsed.get("technologies", [])
-    versions= parsed.get("versions", [])
-    emails  = parsed.get("emails", [])
-
-    # Merge technologies with versions
-    tech_dict = {}
-    for v in versions:
-        tech_dict[v["tech"]] = v["version"]
-    for tech in techs:
-        if tech not in tech_dict:
-            tech_dict[tech] = ""
-
+    """Corrected WhatWeb formatter"""
+    techs = parsed.get("technologies", [])
+    versions = parsed.get("versions", [])
+    status = parsed.get("status_code", "")
+    server = parsed.get("server", "")
+    title = parsed.get("title", "")
+    cookies = parsed.get("cookies", [])
+    country = parsed.get("country", "")
+    redirect = parsed.get("redirect", "")
+    
+    # Build version lookup
+    version_map = {v["tech"]: v["version"] for v in versions}
+    
     header = Text()
+    header.append("  Target: ", style="dim")
+    header.append(f"{parsed.get('ips', ['?'])[0]}\n", style="cyan")
+    if status:
+        status_color = "green" if "200" in status else "yellow"
+        header.append("  Status: ", style="dim")
+        header.append(f"{status}\n", style=status_color)
+    if server:
+        header.append("  Server: ", style="dim")
+        header.append(f"{server}\n", style="yellow")
+    if title:
+        header.append("  Title: ", style="dim")
+        header.append(f"{title}\n", style="bold white")
+    if redirect:
+        header.append("  Redirect: ", style="dim")
+        header.append(f"{redirect}\n", style="cyan")
+    if country:
+        header.append("  Country: ", style="dim")
+        header.append(f"{country}\n", style="dim")
     header.append("  Technologies: ", style="dim")
-    header.append(str(len(tech_dict)), style="bold cyan")
-    if emails:
-        header.append("  | Emails: ", style="dim")
-        header.append(str(len(emails)), style="bold green")
-
+    header.append(str(len(techs)), style="bold cyan")
+    
     console.print(Panel(header, title="[bold cyan]WhatWeb Results[/bold cyan]",
                         border_style="cyan", box=box.ROUNDED))
-
-    # Display ALL technologies (with and without versions)
-    if tech_dict:
+    
+    if techs:
         table = Table(show_header=True, header_style="bold magenta",
                       box=box.SIMPLE_HEAVY, border_style="dim")
         table.add_column("Technology", style="bold cyan")
         table.add_column("Version", style="yellow")
-
-        for tech, version in sorted(tech_dict.items()):
-            if version:
-                table.add_row(tech, version)
-            else:
-                table.add_row(tech, "[dim]detected[/dim]")
+        table.add_column("Details", style="dim")
+        
+        # Known interesting technologies to highlight
+        high_interest = {"PHP", "Apache", "MySQL", "WordPress", "Drupal", "Joomla"}
+        
+        for tech in sorted(techs):
+            version = version_map.get(tech, "")
+            style = "bold red" if tech in high_interest else "bold cyan"
+            
+            # Get full detail if available
+            detail = ""
+            if tech == "PHP" and version:
+                detail = f"v{version}"
+            elif tech == "Apache" and version:
+                detail = f"v{version}"
+            elif tech == "X-Powered-By":
+                detail = version
+                
+            table.add_row(f"[{style}]{tech}[/{style}]", 
+                         version if version else "[dim]detected[/dim]",
+                         detail)
+        
         console.print(table)
-    else:
-        console.print("[yellow]  No technologies detected.[/yellow]")
-
-    # Display emails
-    if emails:
-        console.print("\n[bold magenta]── Emails ──[/bold magenta]")
-        for e in emails:
-            console.print(f"  [green]•[/green] {e}")
-
+    
+    if cookies:
+        console.print("\n[bold magenta]── Cookies ──[/bold magenta]")
+        for c in cookies:
+            console.print(f"  [yellow]🍪[/yellow] {c}")
+    
     console.print()
 
 
