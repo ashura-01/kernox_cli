@@ -501,35 +501,48 @@ def format_hashcat(parsed: dict) -> None:
 
 
 def format_whatweb(parsed: dict) -> None:
-    techs   = parsed.get("technologies", [])
-    versions= parsed.get("versions", [])
-    emails  = parsed.get("emails", [])
-
+    import re
+ 
+    def _strip_ansi(text: str) -> str:
+        text = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', text)
+        text = re.sub(r'[^\x00-\x7F]?\[\d+(?:;\d+)*m', '', text)
+        text = re.sub(r'\[\d+m', '', text)
+        return text.strip()
+ 
+    raw_techs   = parsed.get("technologies", [])
+    raw_versions = parsed.get("versions", [])
+    emails      = parsed.get("emails", [])
+ 
+    # Strip ANSI from everything before rendering
+    techs    = [_strip_ansi(t) for t in raw_techs if _strip_ansi(t)]
+    versions = [{"tech": _strip_ansi(v["tech"]), "version": _strip_ansi(v["version"])}
+                for v in raw_versions if _strip_ansi(v.get("tech", ""))]
+ 
     # Merge technologies with versions
     tech_dict = {}
     for v in versions:
-        tech_dict[v["tech"]] = v["version"]
+        if v["tech"]:
+            tech_dict[v["tech"]] = v["version"]
     for tech in techs:
-        if tech not in tech_dict:
+        if tech and tech not in tech_dict:
             tech_dict[tech] = ""
-
+ 
     header = Text()
     header.append("  Technologies: ", style="dim")
     header.append(str(len(tech_dict)), style="bold cyan")
     if emails:
         header.append("  | Emails: ", style="dim")
         header.append(str(len(emails)), style="bold green")
-
+ 
     console.print(Panel(header, title="[bold cyan]WhatWeb Results[/bold cyan]",
                         border_style="cyan", box=box.ROUNDED))
-
-    # Display ALL technologies (with and without versions)
+ 
     if tech_dict:
         table = Table(show_header=True, header_style="bold magenta",
                       box=box.SIMPLE_HEAVY, border_style="dim")
         table.add_column("Technology", style="bold cyan")
         table.add_column("Version", style="yellow")
-
+ 
         for tech, version in sorted(tech_dict.items()):
             if version:
                 table.add_row(tech, version)
@@ -538,13 +551,12 @@ def format_whatweb(parsed: dict) -> None:
         console.print(table)
     else:
         console.print("[yellow]  No technologies detected.[/yellow]")
-
-    # Display emails
+ 
     if emails:
         console.print("\n[bold magenta]── Emails ──[/bold magenta]")
         for e in emails:
             console.print(f"  [green]•[/green] {e}")
-
+ 
     console.print()
 
 

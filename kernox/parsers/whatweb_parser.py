@@ -4,7 +4,13 @@ import re
 
 
 def _strip_ansi(text: str) -> str:
-    return re.sub(r'\x1b\[[0-9;]*[a-zA-Z]|\[[0-9;]*[a-zA-Z]', '', text)
+    # Strip standard ANSI: \x1b[...m
+    text = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', text)
+    # Strip broken/non-standard ANSI that whatweb emits: ■[1m  [31m  [0m  [22m etc.
+    text = re.sub(r'[^\x00-\x7F]?\[\d+(?:;\d+)*m', '', text)
+    # Strip any remaining lone bracket codes like [0m [1m [22m
+    text = re.sub(r'\[\d+m', '', text)
+    return text
 
 
 class WhatwebParser:
