@@ -2,6 +2,11 @@
 from __future__ import annotations
 import re
 
+
+def _strip_ansi(text: str) -> str:
+    return re.sub(r'\x1b\[[0-9;]*[a-zA-Z]|\[[0-9;]*[a-zA-Z]', '', text)
+
+
 class WhatwebParser:
     PLUGIN_RE = re.compile(r"\[([^\]]+)\]")
     VERSION_RE = re.compile(r"(\w[\w\-\.]+)\s+\[(\d[\d\.]+)\]")
@@ -10,6 +15,7 @@ class WhatwebParser:
     COUNTRY_RE = re.compile(r"Country\[([^\]]+)\]")
 
     def parse(self, raw: str) -> dict:
+        raw = _strip_ansi(raw)
         technologies, versions, emails = [], [], []
         for m in self.PLUGIN_RE.finditer(raw):
             val = m.group(1).strip()
