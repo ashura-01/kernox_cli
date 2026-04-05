@@ -303,7 +303,7 @@ class Orchestrator:
         self._tools    = {
             "nmap": NmapTool(ai_client=self._ai),
             # "ffuf":          FfufTool(),
-            "ffuf": FfufTool(ai_client=self._ai),  
+            "ffuf": FfufTool(ai_client=self._ai),
             "gobuster":      GobusterTool(),
             "sqlmap":        SqlmapTool(),
             "nikto":         NiktoTool(),
@@ -1097,22 +1097,31 @@ Rules:
 
         # whatweb: inject context from nmap and curl
         if tool_name == "whatweb":
-            context = {
-                "open_ports": [],
-                "server": "",
-                "technologies": []
-            }
-            for tr in self._state.get_tool_results():
-                if tr.tool == "nmap":
-                    for host in tr.parsed.get("hosts", []):
-                        for port in host.get("ports", []):
-                            if port.get("state") == "open":
-                                context["open_ports"].append(port.get("port"))
-                if tr.tool == "curl":
-                    context["server"] = tr.parsed.get("headers", {}).get("server", "")
-                if tr.tool == "whatweb" and args.get("target") == tr.target:
-                    context["technologies"] = tr.parsed.get("technologies", [])
-            args["context"] = context
+            # Flag outdated/vulnerable tech versions
+            versions = parsed.get("versions", [])
+            technologies = parsed.get("technologies", [])
+
+            for v in versions:
+                tech = v.get("tech", "")
+                ver = v.get("version", "")
+                if tech and ver:
+                    vulnerabilities.append({
+                        "name": f"Technology version exposed: {tech} {ver}",
+                        "severity": "info",
+                        "description": f"Server is running {tech} version {ver} — check for known CVEs",
+                    })
+
+            notable_techs = ["wordpress", "joomla", "drupal", "php", "apache", "nginx", "iis"]
+            for tech in technologies:
+                if tech.lower() in notable_techs and tech not in [v.get("tech") for v in versions]:
+                    vulnerabilities.append({
+                        "name": f"Technology detected: {tech}",
+                        "severity": "info",
+                        "description": f"Server is running {tech} — check for known vulnerabilities",
+                    })
+
+            if not versions and not technologies:
+                return
 
         elif tool_name == "onesixtyone":
             if parsed.get("communities"):
@@ -1315,7 +1324,7 @@ priority: 1=high, 2=medium, 3=low. Return [] if no follow-up is needed."""
             # After whatweb detects technologies, suggest targeted tools
             technologies = parsed.get("technologies", [])
             techs_lower = [t.lower() for t in technologies]
-            
+
             if "wordpress" in techs_lower or "wp" in techs_lower:
                 suggestions.append({
                     "tool": "wpscan",
