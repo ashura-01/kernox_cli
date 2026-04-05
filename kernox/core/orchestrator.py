@@ -1283,125 +1283,125 @@ priority: 1=high, 2=medium, 3=low. Return [] if no follow-up is needed."""
             return []
 
 
-def _fallback_chain(self, tool_name: str, parsed: dict, args: dict) -> list[dict]:
-    """Deterministic fallback chain rules."""
-    suggestions: list[dict] = []
-    target = args.get("target", "")
+    def _fallback_chain(self, tool_name: str, parsed: dict, args: dict) -> list[dict]:
+        """Deterministic fallback chain rules."""
+        suggestions: list[dict] = []
+        target = args.get("target", "")
 
-    if tool_name == "nmap":
-        enum_steps = suggest_enumeration(parsed)
-        if enum_steps:
-            print_enum_plan(enum_steps)
-            for s in enum_steps:
-                if s.tool != "custom":
-                    suggestions.append({"tool": s.tool, "args": s.args, "reason": s.reason, "priority": s.priority})
-        for host in parsed.get("hosts", []):
-            for port in host.get("ports", []):
-                if port.get("port") in (80, 443, 8080, 8180):
-                    # Add whatweb suggestion for web servers
-                    suggestions.append({
-                        "tool": "whatweb",
-                        "args": {"target": f"http{'s' if port.get('port') == 443 else ''}://{host['ip']}"},
-                        "reason": f"Web server on port {port.get('port')} — fingerprint technologies",
-                        "priority": 2,
-                    })
-                    if "wordpress" in port.get("version", "").lower():
-                        suggestions.append({"tool": "wpscan", "args": {"target": f"http://{host['ip']}", "mode": "full"}, "reason": "WordPress detected", "priority": 1})
-                    suggestions.append({"tool": "zapcli", "args": {"target": f"http{'s' if port.get('port') == 443 else ''}://{host['ip']}", "mode": "baseline"}, "reason": f"Web on port {port.get('port')} — ZAP scan", "priority": 3})
-                if port.get("port") in (53, 80, 443):
-                    suggestions.append({"tool": "theharvester", "args": {"target": host.get("hostname") or target}, "reason": "OSINT harvest", "priority": 3})
+        if tool_name == "nmap":
+            enum_steps = suggest_enumeration(parsed)
+            if enum_steps:
+                print_enum_plan(enum_steps)
+                for s in enum_steps:
+                    if s.tool != "custom":
+                        suggestions.append({"tool": s.tool, "args": s.args, "reason": s.reason, "priority": s.priority})
+            for host in parsed.get("hosts", []):
+                for port in host.get("ports", []):
+                    if port.get("port") in (80, 443, 8080, 8180):
+                        # Add whatweb suggestion for web servers
+                        suggestions.append({
+                            "tool": "whatweb",
+                            "args": {"target": f"http{'s' if port.get('port') == 443 else ''}://{host['ip']}"},
+                            "reason": f"Web server on port {port.get('port')} — fingerprint technologies",
+                            "priority": 2,
+                        })
+                        if "wordpress" in port.get("version", "").lower():
+                            suggestions.append({"tool": "wpscan", "args": {"target": f"http://{host['ip']}", "mode": "full"}, "reason": "WordPress detected", "priority": 1})
+                        suggestions.append({"tool": "zapcli", "args": {"target": f"http{'s' if port.get('port') == 443 else ''}://{host['ip']}", "mode": "baseline"}, "reason": f"Web on port {port.get('port')} — ZAP scan", "priority": 3})
+                    if port.get("port") in (53, 80, 443):
+                        suggestions.append({"tool": "theharvester", "args": {"target": host.get("hostname") or target}, "reason": "OSINT harvest", "priority": 3})
 
-    elif tool_name == "whatweb":
-        # After whatweb detects technologies, suggest targeted tools
-        technologies = parsed.get("technologies", [])
-        techs_lower = [t.lower() for t in technologies]
-        
-        if "wordpress" in techs_lower or "wp" in techs_lower:
+        elif tool_name == "whatweb":
+            # After whatweb detects technologies, suggest targeted tools
+            technologies = parsed.get("technologies", [])
+            techs_lower = [t.lower() for t in technologies]
+            
+            if "wordpress" in techs_lower or "wp" in techs_lower:
+                suggestions.append({
+                    "tool": "wpscan",
+                    "args": {"target": target, "mode": "full"},
+                    "reason": "WordPress detected by whatweb — deep scan",
+                    "priority": 1,
+                })
+            if "joomla" in techs_lower:
+                suggestions.append({
+                    "tool": "joomscan",
+                    "args": {"target": target},
+                    "reason": "Joomla detected — run joomscan",
+                    "priority": 2,
+                })
+            if "drupal" in techs_lower:
+                suggestions.append({
+                    "tool": "droopescan",
+                    "args": {"target": target, "mode": "drupal"},
+                    "reason": "Drupal detected — run droopescan",
+                    "priority": 2,
+                })
+            if any(tech in techs_lower for tech in ["php", "asp", "jsp"]):
+                suggestions.append({
+                    "tool": "ffuf",
+                    "args": {"target": target, "mode": "dir"},
+                    "reason": f"{'PHP' if 'php' in techs_lower else 'ASP/JSP'} detected — directory fuzzing",
+                    "priority": 2,
+                })
+            # Always suggest nuclei after whatweb
             suggestions.append({
-                "tool": "wpscan",
-                "args": {"target": target, "mode": "full"},
-                "reason": "WordPress detected by whatweb — deep scan",
-                "priority": 1,
-            })
-        if "joomla" in techs_lower:
-            suggestions.append({
-                "tool": "joomscan",
-                "args": {"target": target},
-                "reason": "Joomla detected — run joomscan",
+                "tool": "nuclei",
+                "args": {"target": target, "mode": "quick"},
+                "reason": f"Technologies detected: {', '.join(technologies[:3])} — run nuclei CVEs",
                 "priority": 2,
             })
-        if "drupal" in techs_lower:
-            suggestions.append({
-                "tool": "droopescan",
-                "args": {"target": target, "mode": "drupal"},
-                "reason": "Drupal detected — run droopescan",
-                "priority": 2,
-            })
-        if any(tech in techs_lower for tech in ["php", "asp", "jsp"]):
-            suggestions.append({
-                "tool": "ffuf",
-                "args": {"target": target, "mode": "dir"},
-                "reason": f"{'PHP' if 'php' in techs_lower else 'ASP/JSP'} detected — directory fuzzing",
-                "priority": 2,
-            })
-        # Always suggest nuclei after whatweb
-        suggestions.append({
-            "tool": "nuclei",
-            "args": {"target": target, "mode": "quick"},
-            "reason": f"Technologies detected: {', '.join(technologies[:3])} — run nuclei CVEs",
-            "priority": 2,
-        })
 
-    elif tool_name == "nikto":
-        findings = " ".join(parsed.get("findings", [])).lower()
-        if "wordpress" in findings:
-            suggestions.append({"tool": "wpscan", "args": {"target": target, "mode": "full"}, "reason": "WordPress found by nikto", "priority": 1})
-        if "sql" in findings or "injection" in findings:
-            suggestions.append({"tool": "sqlmap", "args": {"target": target, "flags": "--batch --level=2"}, "reason": "Potential SQLi found", "priority": 1})
-        if parsed.get("total", 0) > 0:
-            suggestions.append({"tool": "zapcli", "args": {"target": target, "mode": "active"}, "reason": f"Nikto found {parsed.get('total', 0)} issues — ZAP active scan", "priority": 2})
+        elif tool_name == "nikto":
+            findings = " ".join(parsed.get("findings", [])).lower()
+            if "wordpress" in findings:
+                suggestions.append({"tool": "wpscan", "args": {"target": target, "mode": "full"}, "reason": "WordPress found by nikto", "priority": 1})
+            if "sql" in findings or "injection" in findings:
+                suggestions.append({"tool": "sqlmap", "args": {"target": target, "flags": "--batch --level=2"}, "reason": "Potential SQLi found", "priority": 1})
+            if parsed.get("total", 0) > 0:
+                suggestions.append({"tool": "zapcli", "args": {"target": target, "mode": "active"}, "reason": f"Nikto found {parsed.get('total', 0)} issues — ZAP active scan", "priority": 2})
 
-    elif tool_name == "wpscan":
-        users = parsed.get("users", [])
-        if users:
-            suggestions.append({"tool": "hydra", "args": {"target": target, "mode": "http-post-form", "form_path": "/wp-login.php", "form_params": "log=^USER^&pwd=^PASS^:F=incorrect", "username": users[0]}, "reason": f"WPScan found user '{users[0]}' — Hydra brute force", "priority": 2})
+        elif tool_name == "wpscan":
+            users = parsed.get("users", [])
+            if users:
+                suggestions.append({"tool": "hydra", "args": {"target": target, "mode": "http-post-form", "form_path": "/wp-login.php", "form_params": "log=^USER^&pwd=^PASS^:F=incorrect", "username": users[0]}, "reason": f"WPScan found user '{users[0]}' — Hydra brute force", "priority": 2})
 
-    elif tool_name == "ffuf":
-        for f in parsed.get("findings", []):
-            path = f.get("path", "").lower()
-            if any(x in path for x in ("login", "admin", "wp-login", "phpmyadmin")):
-                suggestions.append({"tool": "sqlmap", "args": {"target": f"{target}/{path}", "flags": "--batch --forms"}, "reason": f"Login page at {path} — test SQLi", "priority": 1})
-                suggestions.append({"tool": "hydra", "args": {"target": target, "mode": "http-post-form", "form_path": f"/{path}"}, "reason": f"Login at {path} — brute force", "priority": 2})
-                break
+        elif tool_name == "ffuf":
+            for f in parsed.get("findings", []):
+                path = f.get("path", "").lower()
+                if any(x in path for x in ("login", "admin", "wp-login", "phpmyadmin")):
+                    suggestions.append({"tool": "sqlmap", "args": {"target": f"{target}/{path}", "flags": "--batch --forms"}, "reason": f"Login page at {path} — test SQLi", "priority": 1})
+                    suggestions.append({"tool": "hydra", "args": {"target": target, "mode": "http-post-form", "form_path": f"/{path}"}, "reason": f"Login at {path} — brute force", "priority": 2})
+                    break
 
-    elif tool_name == "zapcli":
-        if parsed.get("high", 0) + parsed.get("critical", 0) > 0:
-            suggestions.append({"tool": "nuclei", "args": {"target": target, "mode": "cves"}, "reason": f"ZAP found {parsed.get('high',0)} high — nuclei CVE scan", "priority": 1})
+        elif tool_name == "zapcli":
+            if parsed.get("high", 0) + parsed.get("critical", 0) > 0:
+                suggestions.append({"tool": "nuclei", "args": {"target": target, "mode": "cves"}, "reason": f"ZAP found {parsed.get('high',0)} high — nuclei CVE scan", "priority": 1})
 
-    elif tool_name == "enum4linux":
-        if parsed.get("shares"):
-            suggestions.append({"tool": "smbclient", "args": {"target": target, "mode": "anon"}, "reason": f"Found {len(parsed.get('shares',[]))} shares — anonymous access", "priority": 1})
+        elif tool_name == "enum4linux":
+            if parsed.get("shares"):
+                suggestions.append({"tool": "smbclient", "args": {"target": target, "mode": "anon"}, "reason": f"Found {len(parsed.get('shares',[]))} shares — anonymous access", "priority": 1})
 
-    elif tool_name == "hydra":
-        cracked = parsed.get("cracked", [])
-        if cracked:
-            suggestions.append({"tool": "privesc", "args": {"mode": "full", "ssh_host": cracked[0].get("host", target), "ssh_user": cracked[0].get("username", "")}, "reason": f"Cracked {cracked[0].get('username','')} — run privesc", "priority": 1})
+        elif tool_name == "hydra":
+            cracked = parsed.get("cracked", [])
+            if cracked:
+                suggestions.append({"tool": "privesc", "args": {"mode": "full", "ssh_host": cracked[0].get("host", target), "ssh_user": cracked[0].get("username", "")}, "reason": f"Cracked {cracked[0].get('username','')} — run privesc", "priority": 1})
 
-    elif tool_name == "theharvester":
-        if parsed.get("subdomains"):
-            suggestions.append({"tool": "nmap", "args": {"target": parsed["subdomains"][0], "mode": "service"}, "reason": f"Found {len(parsed['subdomains'])} subdomains — scan first", "priority": 2})
+        elif tool_name == "theharvester":
+            if parsed.get("subdomains"):
+                suggestions.append({"tool": "nmap", "args": {"target": parsed["subdomains"][0], "mode": "service"}, "reason": f"Found {len(parsed['subdomains'])} subdomains — scan first", "priority": 2})
 
-    elif tool_name == "privesc":
-        for j in parsed.get("juicy_points", []):
-            if j.get("category") == "writable" and "shadow" in j.get("path", ""):
-                suggestions.append({"tool": "hashcat", "args": {"hashfile": "/etc/shadow"}, "reason": "Readable /etc/shadow — crack root hash", "priority": 1})
-                break
+        elif tool_name == "privesc":
+            for j in parsed.get("juicy_points", []):
+                if j.get("category") == "writable" and "shadow" in j.get("path", ""):
+                    suggestions.append({"tool": "hashcat", "args": {"hashfile": "/etc/shadow"}, "reason": "Readable /etc/shadow — crack root hash", "priority": 1})
+                    break
 
-    elif tool_name == "mail_crawler":
-        if parsed.get("emails"):
-            suggestions.append({"tool": "theharvester", "args": {"target": target}, "reason": f"Found {len(parsed.get('emails',[]))} emails — broader OSINT", "priority": 3})
+        elif tool_name == "mail_crawler":
+            if parsed.get("emails"):
+                suggestions.append({"tool": "theharvester", "args": {"target": target}, "reason": f"Found {len(parsed.get('emails',[]))} emails — broader OSINT", "priority": 3})
 
-    return suggestions
+        return suggestions
 
 
     # def _fallback_chain(self, tool_name: str, parsed: dict, args: dict) -> list[dict]:
