@@ -1247,38 +1247,33 @@ Provide a clear, professional explanation in JSON format:
     {", ".join(available_tools)}
 
     Rules:
-    - Only suggest tools that make sense given the actual findings
+    - Suggest tools that make sense for the specific findings
     - Do NOT repeat a tool that was just run
-    - Prioritize high-impact findings
-    - If nothing significant was found, return an empty list
+    - Prioritize the most impactful vulnerabilities first
+    - Return [] if nothing significant was found
 
-    **CRITICAL for hydra:** When suggesting hydra, you MUST include the 'service' field with the exact service name (ssh, telnet, ftp, etc.) based on the port/service found.
-    - Port 23/telnet → "service": "telnet"
-    - Port 22/ssh → "service": "ssh"
-    - Port 21/ftp → "service": "ftp"
-
-    **CRITICAL for hydra example:** 
-    {{"tool": "hydra", "args": {{"target": "192.168.1.1", "service": "telnet", "port": 23}}, "reason": "Telnet exposed for brute force", "priority": 1}}
+    For each suggestion, include the appropriate parameters for that tool.
+    Use your knowledge of what each service/vulnerability requires.
 
     Respond ONLY with a JSON array (no other text):
     [
     {{
         "tool": "tool_name",
-        "args": {{"target": "...", "service": "..."}},
-        "reason": "one-line reason",
+        "args": {{"target": "{target}"}},
+        "reason": "brief explanation of why this tool",
         "priority": 1
     }}
     ]
 
-    priority: 1=high, 2=medium, 3=low. Return [] if no follow-up is needed."""
+    priority: 1=high (critical/exploitable now), 2=medium, 3=low (informational only)."""
 
         try:
             with Live(Spinner("dots", text="[dim]AI planning next steps...[/dim]"), refresh_per_second=10):
                 response = self._ai.chat(
                     messages=[{"role": "user", "content": prompt}],
-                    system="You are a penetration testing expert. Return ONLY a JSON array. For hydra, ALWAYS include 'service' field.",
+                    system="You are a senior penetration tester. Return ONLY a JSON array. Use your security knowledge to choose the right tool for each finding.",
                     max_tokens=600,
-                    temperature=0.1,
+                    temperature=0.3,  # Slightly higher for more diverse suggestions
                 )
 
             import re as _re
@@ -1292,21 +1287,13 @@ Provide a clear, professional explanation in JSON format:
             valid = []
             for s in suggestions[:3]:
                 if isinstance(s, dict) and s.get("tool") and s.get("tool") in self._tools:
-                    # Ensure args is a dict
                     args_dict = s.get("args", {"target": target})
                     if not isinstance(args_dict, dict):
                         args_dict = {"target": target}
                     
-                    # If hydra and no service, try to infer from args or add warning
-                    if s["tool"] == "hydra" and "service" not in args_dict and "mode" not in args_dict:
-                        # Try to infer from port if present
-                        if args_dict.get("port") == 23:
-                            args_dict["service"] = "telnet"
-                        elif args_dict.get("port") == 22:
-                            args_dict["service"] = "ssh"
-                        else:
-                            # Log warning but still allow (will default to ssh)
-                            console.print("[dim yellow]Warning: hydra suggestion missing 'service' field[/dim yellow]")
+                    # Ensure target is set if missing
+                    if "target" not in args_dict or not args_dict["target"]:
+                        args_dict["target"] = target
                     
                     valid.append({
                         "tool": s["tool"],
