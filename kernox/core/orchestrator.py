@@ -217,14 +217,17 @@ zapcli (OWASP ZAP):
   CHAIN: run after nikto/nuclei when web app needs deeper active testing
   Requires: zap.sh in PATH  OR  Docker (ghcr.io/zaproxy/zaproxy)
 
+
 hydra:
-  args: target (IP/hostname), mode (ssh/ftp/http-post-form/smb/rdp/telnet/mysql/mssql),
+  args: target (IP/hostname), service (REQUIRED - use exact service name from nmap: ssh, telnet, ftp, smb, http-post-form, etc.),
         userlist, passlist, username, password, port, threads, form_path, form_params, flags
   Use for credential brute-force after finding login forms or services.
-  CHAIN: run after ffuf finds a login page, or after wpscan finds users
+  **CRITICAL: You MUST include the 'service' field with the exact service name from nmap results**
+  **CRITICAL: Do NOT use 'mode' - use 'service' instead**
   Examples:
-    - SSH brute force: {"target": "192.168.1.1", "mode": "ssh", "passlist": "/usr/share/wordlists/rockyou.txt"}
-    - HTTP form:       {"target": "192.168.1.1", "mode": "http-post-form", "form_path": "/login"}
+    - SSH: {"target": "192.168.1.1", "service": "ssh"}
+    - Telnet: {"target": "192.168.1.1", "service": "telnet", "port": 23}
+    - FTP: {"target": "192.168.1.1", "service": "ftp", "port": 21}
 
 theharvester:
   args: target (domain), sources, limit
@@ -1232,40 +1235,48 @@ Provide a clear, professional explanation in JSON format:
 
         prompt = f"""You are Kernox AI. A penetration test tool just finished running.
 
-Tool: {tool_name.upper()}
-Target: {target}
-Results:
-{summary}
+    Tool: {tool_name.upper()}
+    Target: {target}
+    Results:
+    {summary}
 
-Current session state:
-{self._build_state_context()}
+    Current session state:
+    {self._build_state_context()}
 
-Based on these results, suggest the BEST 1-3 follow-up tools from this list:
-{", ".join(available_tools)}
+    Based on these results, suggest the BEST 1-3 follow-up tools from this list:
+    {", ".join(available_tools)}
 
-Rules:
-- Only suggest tools that make sense given the actual findings
-- Do NOT repeat a tool that was just run
-- Prioritize high-impact findings
-- If nothing significant was found, return an empty list
+    Rules:
+    - Only suggest tools that make sense given the actual findings
+    - Do NOT repeat a tool that was just run
+    - Prioritize high-impact findings
+    - If nothing significant was found, return an empty list
 
-Respond ONLY with a JSON array (no other text):
-[
-  {{
-    "tool": "tool_name",
-    "args": {{"target": "..."}},
-    "reason": "one-line reason",
-    "priority": 1
-  }}
-]
+    **CRITICAL for hydra:** When suggesting hydra, you MUST include the 'service' field with the exact service name (ssh, telnet, ftp, etc.) based on the port/service found.
+    - Port 23/telnet → "service": "telnet"
+    - Port 22/ssh → "service": "ssh"
+    - Port 21/ftp → "service": "ftp"
 
-priority: 1=high, 2=medium, 3=low. Return [] if no follow-up is needed."""
+    **CRITICAL for hydra example:** 
+    {{"tool": "hydra", "args": {{"target": "192.168.1.1", "service": "telnet", "port": 23}}, "reason": "Telnet exposed for brute force", "priority": 1}}
+
+    Respond ONLY with a JSON array (no other text):
+    [
+    {{
+        "tool": "tool_name",
+        "args": {{"target": "...", "service": "..."}},
+        "reason": "one-line reason",
+        "priority": 1
+    }}
+    ]
+
+    priority: 1=high, 2=medium, 3=low. Return [] if no follow-up is needed."""
 
         try:
             with Live(Spinner("dots", text="[dim]AI planning next steps...[/dim]"), refresh_per_second=10):
                 response = self._ai.chat(
                     messages=[{"role": "user", "content": prompt}],
-                    system="You are a penetration testing expert. Return ONLY a JSON array.",
+                    system="You are a penetration testing expert. Return ONLY a JSON array. For hydra, ALWAYS include 'service' field.",
                     max_tokens=600,
                     temperature=0.1,
                 )
@@ -1281,14 +1292,31 @@ priority: 1=high, 2=medium, 3=low. Return [] if no follow-up is needed."""
             valid = []
             for s in suggestions[:3]:
                 if isinstance(s, dict) and s.get("tool") and s.get("tool") in self._tools:
+                    # Ensure args is a dict
+                    args_dict = s.get("args", {"target": target})
+                    if not isinstance(args_dict, dict):
+                        args_dict = {"target": target}
+                    
+                    # If hydra and no service, try to infer from args or add warning
+                    if s["tool"] == "hydra" and "service" not in args_dict and "mode" not in args_dict:
+                        # Try to infer from port if present
+                        if args_dict.get("port") == 23:
+                            args_dict["service"] = "telnet"
+                        elif args_dict.get("port") == 22:
+                            args_dict["service"] = "ssh"
+                        else:
+                            # Log warning but still allow (will default to ssh)
+                            console.print("[dim yellow]Warning: hydra suggestion missing 'service' field[/dim yellow]")
+                    
                     valid.append({
                         "tool": s["tool"],
-                        "args": s.get("args", {"target": target}),
+                        "args": args_dict,
                         "reason": s.get("reason", "AI suggested"),
                         "priority": s.get("priority", 2),
                     })
             return valid
-        except Exception:
+        except Exception as e:
+            console.print(f"[dim red]Chain suggestion failed: {e}[/dim red]")
             return []
 
 
@@ -1412,78 +1440,6 @@ priority: 1=high, 2=medium, 3=low. Return [] if no follow-up is needed."""
 
         return suggestions
 
-
-    # def _fallback_chain(self, tool_name: str, parsed: dict, args: dict) -> list[dict]:
-    #     """Deterministic fallback chain rules."""
-    #     suggestions: list[dict] = []
-    #     target = args.get("target", "")
-
-    #     if tool_name == "nmap":
-    #         enum_steps = suggest_enumeration(parsed)
-    #         if enum_steps:
-    #             print_enum_plan(enum_steps)
-    #             for s in enum_steps:
-    #                 if s.tool != "custom":
-    #                     suggestions.append({"tool": s.tool, "args": s.args, "reason": s.reason, "priority": s.priority})
-    #         for host in parsed.get("hosts", []):
-    #             for port in host.get("ports", []):
-    #                 if port.get("port") in (80, 443, 8080, 8180):
-    #                     if "wordpress" in port.get("version", "").lower():
-    #                         suggestions.append({"tool": "wpscan", "args": {"target": f"http://{host['ip']}", "mode": "full"}, "reason": "WordPress detected", "priority": 1})
-    #                     suggestions.append({"tool": "zapcli", "args": {"target": f"http{'s' if port.get('port') == 443 else ''}://{host['ip']}", "mode": "baseline"}, "reason": f"Web on port {port.get('port')} — ZAP scan", "priority": 3})
-    #                 if port.get("port") in (53, 80, 443):
-    #                     suggestions.append({"tool": "theharvester", "args": {"target": host.get("hostname") or target}, "reason": "OSINT harvest", "priority": 3})
-
-    #     elif tool_name == "nikto":
-    #         findings = " ".join(parsed.get("findings", [])).lower()
-    #         if "wordpress" in findings:
-    #             suggestions.append({"tool": "wpscan", "args": {"target": target, "mode": "full"}, "reason": "WordPress found by nikto", "priority": 1})
-    #         if "sql" in findings or "injection" in findings:
-    #             suggestions.append({"tool": "sqlmap", "args": {"target": target, "flags": "--batch --level=2"}, "reason": "Potential SQLi found", "priority": 1})
-    #         if parsed.get("total", 0) > 0:
-    #             suggestions.append({"tool": "zapcli", "args": {"target": target, "mode": "active"}, "reason": f"Nikto found {parsed.get('total', 0)} issues — ZAP active scan", "priority": 2})
-
-    #     elif tool_name == "wpscan":
-    #         users = parsed.get("users", [])
-    #         if users:
-    #             suggestions.append({"tool": "hydra", "args": {"target": target, "mode": "http-post-form", "form_path": "/wp-login.php", "form_params": "log=^USER^&pwd=^PASS^:F=incorrect", "username": users[0]}, "reason": f"WPScan found user '{users[0]}' — Hydra brute force", "priority": 2})
-
-    #     elif tool_name == "ffuf":
-    #         for f in parsed.get("findings", []):
-    #             path = f.get("path", "").lower()
-    #             if any(x in path for x in ("login", "admin", "wp-login", "phpmyadmin")):
-    #                 suggestions.append({"tool": "sqlmap", "args": {"target": f"{target}/{path}", "flags": "--batch --forms"}, "reason": f"Login page at {path} — test SQLi", "priority": 1})
-    #                 suggestions.append({"tool": "hydra", "args": {"target": target, "mode": "http-post-form", "form_path": f"/{path}"}, "reason": f"Login at {path} — brute force", "priority": 2})
-    #                 break
-
-    #     elif tool_name == "zapcli":
-    #         if parsed.get("high", 0) + parsed.get("critical", 0) > 0:
-    #             suggestions.append({"tool": "nuclei", "args": {"target": target, "mode": "cves"}, "reason": f"ZAP found {parsed.get('high',0)} high — nuclei CVE scan", "priority": 1})
-
-    #     elif tool_name == "enum4linux":
-    #         if parsed.get("shares"):
-    #             suggestions.append({"tool": "smbclient", "args": {"target": target, "mode": "anon"}, "reason": f"Found {len(parsed.get('shares',[]))} shares — anonymous access", "priority": 1})
-
-    #     elif tool_name == "hydra":
-    #         cracked = parsed.get("cracked", [])
-    #         if cracked:
-    #             suggestions.append({"tool": "privesc", "args": {"mode": "full", "ssh_host": cracked[0].get("host", target), "ssh_user": cracked[0].get("username", "")}, "reason": f"Cracked {cracked[0].get('username','')} — run privesc", "priority": 1})
-
-    #     elif tool_name == "theharvester":
-    #         if parsed.get("subdomains"):
-    #             suggestions.append({"tool": "nmap", "args": {"target": parsed["subdomains"][0], "mode": "service"}, "reason": f"Found {len(parsed['subdomains'])} subdomains — scan first", "priority": 2})
-
-    #     elif tool_name == "privesc":
-    #         for j in parsed.get("juicy_points", []):
-    #             if j.get("category") == "writable" and "shadow" in j.get("path", ""):
-    #                 suggestions.append({"tool": "hashcat", "args": {"hashfile": "/etc/shadow"}, "reason": "Readable /etc/shadow — crack root hash", "priority": 1})
-    #                 break
-
-    #     elif tool_name == "mail_crawler":
-    #         if parsed.get("emails"):
-    #             suggestions.append({"tool": "theharvester", "args": {"target": target}, "reason": f"Found {len(parsed.get('emails',[]))} emails — broader OSINT", "priority": 3})
-
-    #     return suggestions
 
     def _run_chain(self, suggestions: list[dict]) -> None:
         """Show chain suggestions and ask user which to run."""
