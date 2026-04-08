@@ -8,6 +8,9 @@ smb, rdp, telnet, mysql, mssql, pop3, smtp, imap, ldap.
 from __future__ import annotations
 
 import re
+import tempfile
+import os
+import time
 
 
 class HydraTool:
@@ -38,6 +41,7 @@ class HydraTool:
         self,
         target: str,
         mode: str = "ssh",
+        protocol: str = None,      # ← FIX: accept protocol from orchestrator
         userlist: str = "",
         passlist: str = "",
         username: str = "",
@@ -47,6 +51,7 @@ class HydraTool:
         form_params: str = "username=^USER^&password=^PASS^:F=incorrect",
         threads: int = 16,
         flags: str = "",
+        **kwargs,                   # ← FIX: absorb any other unexpected args
     ) -> str:
         """
         Build the Hydra command.
@@ -55,6 +60,7 @@ class HydraTool:
         ----------
         target:       IP or hostname (no scheme).
         mode:         Service type (ssh, ftp, http-post-form, etc.).
+        protocol:     Alias for mode (accepts 'ssh', 'ftp', etc. from orchestrator)
         userlist:     Path to username wordlist file.
         passlist:     Path to password wordlist file.
         username:     Single username (overrides userlist).
@@ -64,7 +70,18 @@ class HydraTool:
         form_params:  Hydra form parameter string for http-*-form modes.
         threads:      Parallel task count (default 16).
         flags:        Extra raw flags appended to command.
+        **kwargs:     Absorbs any other unexpected arguments (like 'service')
         """
+        
+        # ── FIX: Normalize mode/protocol ─────────────────────────────────────
+        # If protocol is provided, use it as mode (orchestrator compatibility)
+        if protocol:
+            mode = protocol
+        
+        # Also check for 'service' in kwargs (another possible alias)
+        if kwargs.get('service'):
+            mode = kwargs['service']
+        
         # Strip scheme from target
         target = re.sub(r"^https?://", "", target).split("/")[0].split(":")[0]
 
@@ -91,8 +108,7 @@ class HydraTool:
             service = f"{mode} {target}"
 
         # Use a temp output file for reliable parsing (avoids -V flood)
-        import tempfile, os as _os
-        out_file = f"/tmp/kernox_hydra_{int(__import__('time').time())}.txt"
+        out_file = f"/tmp/kernox_hydra_{int(time.time())}.txt"
 
         parts = [
             "hydra",
@@ -106,7 +122,11 @@ class HydraTool:
             flags,
             service,
         ]
-        return " ".join(p for p in parts if p)
+        
+        # Filter out empty strings
+        parts = [p for p in parts if p]
+        
+        return " ".join(parts)
 
     def parse(self, output: str) -> dict:
         """Parse Hydra stdout/stderr into a structured dict."""
