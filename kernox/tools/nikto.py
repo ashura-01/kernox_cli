@@ -57,6 +57,60 @@ class NiktoTool:
         if not target.startswith("http"):
             target = f"http://{target}"
 
+        # ── SMART TARGET DETECTION ─────────────────────────────────────────
+        # Check if target is old/slow (like Metasploitable)
+        is_slow_target = False
+        slow_reason = ""
+        
+        if context:
+            server = context.get("headers", {}).get("server", "").lower()
+            techs = [t.lower() for t in context.get("technologies", [])]
+            open_ports = context.get("open_ports", [])
+            
+            # Signs of a vintage/slow target
+            if "apache/2.2" in server:
+                is_slow_target = True
+                slow_reason = "Apache 2.2.x is slow and outdated"
+            elif "apache/1.3" in server:
+                is_slow_target = True
+                slow_reason = "Apache 1.3.x is extremely slow"
+            
+            if "php/5.2" in str(techs) or "php/5.3" in str(techs):
+                is_slow_target = True
+                slow_reason += " + PHP 5.2/5.3 (slow processing)"
+            
+            if "ubuntu 8.04" in str(context) or "debian 4" in str(context):
+                is_slow_target = True
+                slow_reason += " + Vintage OS (Ubuntu 8.04/Debian 4)"
+            
+            # If bindshell or backdoor already found, skip nikto entirely
+            if 1524 in open_ports:
+                console.print(Panel(
+                    "[bold red]⚠ Bindshell detected on port 1524[/bold red]\n"
+                    "This gives immediate root access. Nikto web scan is unnecessary.\n\n"
+                    "[bold]Recommended:[/bold] nc 192.168.0.209 1524",
+                    title="🎯 Higher Priority Finding",
+                    border_style="red"
+                ))
+                return ""  # Skip nikto entirely
+
+        if is_slow_target:
+            console.print(Panel(
+                f"[bold yellow]⚠ Slow target detected[/bold yellow]\n"
+                f"Reason: {slow_reason}\n\n"
+                "Nikto scans on vintage systems can take 1-2 hours or more.\n\n"
+                "[bold]Recommended alternatives:[/bold]\n"
+                "  • whatweb - quick technology detection (seconds)\n"
+                "  • nuclei - faster CVE scanning with -tags tech\n"
+                "  • manual checks - known vulnerabilities for this stack\n\n"
+                "[bold]Continue nikto anyway?[/bold]",
+                title="⏱ Performance Warning",
+                border_style="yellow"
+            ))
+            if not Confirm.ask("Run nikto despite timeout risk?", default=False):
+                console.print("[yellow]⏭ Skipping nikto - use 'whatweb' or 'nuclei' instead[/yellow]")
+                return ""
+
         # If flags provided directly, use them (manual override)
         if flags:
             return f"nikto -h {target} {flags} -output /tmp/kernox_nikto.txt -Format txt"
@@ -64,6 +118,12 @@ class NiktoTool:
         # If AI client available, let AI decide the strategy
         if self._ai_client and not mode:
             strategy = self._ai_decide_strategy(target, context or {})
+            
+            # Check if AI decided to skip
+            if strategy.get("skip"):
+                console.print(f"[yellow]⏭ {strategy.get('reason', 'Skipping nikto')}[/yellow]")
+                return ""
+            
             console.print(Panel(
                 f"[bold cyan]AI Strategy:[/bold cyan] {strategy.get('analysis', '')}\n\n"
                 f"[bold]Command:[/bold] [yellow]{strategy.get('command', '')}[/yellow]\n"
@@ -87,6 +147,7 @@ class NiktoTool:
         
         # Build context from previous scans
         context_str = ""
+        techs = []
         if context:
             techs = context.get("technologies", [])
             ports = context.get("open_ports", [])
@@ -99,6 +160,31 @@ Previous findings on {target}:
 - Server headers: {headers.get('server', 'Unknown')}
 - Powered by: {headers.get('x-powered-by', 'Unknown')}
 """
+
+        # Check for vintage tech that makes nikto impractical
+        vintage_indicators = ["apache/2.2", "php/5.2", "ubuntu 8.04", "debian 4", "apache/1.3"]
+        is_vintage = any(ind in str(context).lower() for ind in vintage_indicators)
+        
+        if is_vintage:
+            return {
+                "analysis": "Target uses vintage software that will cause nikto to run extremely slowly (1-2+ hours)",
+                "command": "",
+                "tuning": "",
+                "reason": "Target too slow for nikto - use whatweb or nuclei instead",
+                "estimated_time": "impossible",
+                "skip": True
+            }
+
+        # Check if there are higher priority findings
+        if 1524 in context.get("open_ports", []):
+            return {
+                "analysis": "Bindshell on port 1524 is a higher priority finding",
+                "command": "",
+                "tuning": "",
+                "reason": "Use nc to get immediate root shell instead of scanning web",
+                "estimated_time": "instant",
+                "skip": True
+            }
 
         prompt = f"""You are a senior penetration tester planning a nikto scan.
 
@@ -122,16 +208,19 @@ Choose appropriate tuning codes from:
 Respond with a JSON object (no other text):
 {{
     "analysis": "Brief 1-2 sentence explanation of your strategy",
-    "command": "full nikto command",
+    "command": "full nikto command with -maxtime to prevent hanging",
     "tuning": "tuning codes (e.g., '1234' or '9a' or 'x4')",
     "reason": "Why this tuning is optimal for this target",
     "estimated_time": "fast/medium/slow"
 }}
 
+IMPORTANT: Always include -maxtime 300 to prevent infinite hangs.
+Example: "command": "nikto -h {target} -Tuning 123b -maxtime 300 -output /tmp/kernox_nikto.txt"
+
 Example responses:
-- WordPress: {{"analysis": "WordPress detected, focusing on plugin enumeration and common WP issues", "command": "nikto -h {target} -Tuning 123b -output /tmp/kernox_nikto.txt", "tuning": "123b", "reason": "WordPress needs file enumeration and software identification", "estimated_time": "medium"}}
-- SQLi suspected: {{"analysis": "SQL injection suspected from previous findings", "command": "nikto -h {target} -Tuning 9 -output /tmp/kernox_nikto.txt", "tuning": "9", "reason": "Focus only on SQL injection checks", "estimated_time": "fast"}}
-- Full scan: {{"analysis": "New target with unknown tech, comprehensive scan", "command": "nikto -h {target} -output /tmp/kernox_nikto.txt", "tuning": "", "reason": "No prior info, run all checks", "estimated_time": "slow"}}
+- WordPress: {{"analysis": "WordPress detected, focusing on plugin enumeration", "command": "nikto -h {target} -Tuning 123b -maxtime 300 -output /tmp/kernox_nikto.txt", "tuning": "123b", "reason": "WordPress needs file enumeration", "estimated_time": "medium"}}
+- SQLi suspected: {{"analysis": "SQL injection suspected", "command": "nikto -h {target} -Tuning 9 -maxtime 120 -output /tmp/kernox_nikto.txt", "tuning": "9", "reason": "Focus only on SQL injection", "estimated_time": "fast"}}
+- Full scan: {{"analysis": "New target, comprehensive scan with timeout", "command": "nikto -h {target} -maxtime 300 -output /tmp/kernox_nikto.txt", "tuning": "", "reason": "No prior info, run all checks with timeout", "estimated_time": "slow"}}
 """
 
         try:
@@ -151,10 +240,10 @@ Example responses:
         except Exception as e:
             console.print(f"[dim]AI strategy failed: {e}, using fallback[/dim]")
         
-        # Fallback to default
+        # Fallback to default with timeout
         return {
-            "analysis": "Default comprehensive scan",
-            "command": f"nikto -h {target} -output /tmp/kernox_nikto.txt",
+            "analysis": "Default comprehensive scan with 5-minute timeout",
+            "command": f"nikto -h {target} -maxtime 300 -output /tmp/kernox_nikto.txt",
             "tuning": "",
             "reason": "No prior information about target",
             "estimated_time": "slow"
@@ -197,28 +286,29 @@ Example responses:
         out = "-output /tmp/kernox_nikto.txt -Format txt"
 
         if mode == "ai":
-            # Let AI decide
             if self._ai_client:
                 strategy = self._ai_decide_strategy(target, {})
-                return strategy.get("command", f"nikto -h {target} {out}")
-            return f"nikto -h {target} {out}"
+                if strategy.get("skip"):
+                    return ""
+                return strategy.get("command", f"nikto -h {target} -maxtime 300 {out}")
+            return f"nikto -h {target} -maxtime 300 {out}"
 
         elif mode == "full":
-            return f"nikto -h {target} {port_flag} {out}"
+            return f"nikto -h {target} {port_flag} -maxtime 300 {out}"
 
         elif mode == "tuned":
             self._show_tuning_options()
             tuning = Prompt.ask("Tuning codes (e.g., 1234 or 9a)", default="1234")
-            return f"nikto -h {target} {port_flag} -Tuning {tuning} {out}"
+            return f"nikto -h {target} {port_flag} -Tuning {tuning} -maxtime 300 {out}"
 
         elif mode == "sqli":
-            return f"nikto -h {target} {port_flag} -Tuning 9 {out}"
+            return f"nikto -h {target} {port_flag} -Tuning 9 -maxtime 120 {out}"
 
         elif mode == "auth":
-            return f"nikto -h {target} {port_flag} -Tuning a {out}"
+            return f"nikto -h {target} {port_flag} -Tuning a -maxtime 120 {out}"
 
         elif mode == "ssl":
-            return f"nikto -h {target} {port_flag} -ssl {out}"
+            return f"nikto -h {target} {port_flag} -ssl -maxtime 300 {out}"
 
         elif mode == "quick":
             return f"nikto -h {target} {port_flag} -Tuning 123b -maxtime 120 {out}"
@@ -227,7 +317,7 @@ Example responses:
             flags = Prompt.ask("Custom nikto flags")
             return f"nikto -h {target} {flags} {out}"
 
-        return f"nikto -h {target} {out}"
+        return f"nikto -h {target} -maxtime 300 {out}"
 
     def _show_tuning_options(self) -> None:
         """Show tuning options table."""
