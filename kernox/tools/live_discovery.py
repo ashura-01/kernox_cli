@@ -171,8 +171,10 @@ class LiveDiscoveryTool:
         **kwargs,
     ) -> Dict[str, Any]:
         """Full discovery pipeline with AI at every stage."""
-        if not target:
+        
+        if not target or target == "auto" or target.lower() == "auto":
             target = self._detect_network_range(interface)
+            console.print(f"[cyan]Auto-detected network: {target}[/cyan]")
 
         results: Dict[str, Any] = {
             "hosts": [],
