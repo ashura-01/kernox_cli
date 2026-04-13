@@ -1233,54 +1233,72 @@ Provide a clear, professional explanation in JSON format:
         summary = _build_smart_summary(tool_name, parsed, target)
         available_tools = list(self._tools.keys())
 
-        prompt = f"""You are Kernox AI. A penetration test tool just finished running.
+        # STRICT prompt - NO markdown, NO natural language
+        prompt = f"""Return ONLY a valid JSON array. NO markdown. NO backticks. NO bash. NO natural language. NO explanatory text.
 
-    Tool: {tool_name.upper()}
+    Format EXACTLY like this example:
+    [{{"tool": "nmap", "args": {{"target": "{target}"}}, "reason": "port scan", "priority": 1}}]
+
+    If no tools needed: return []
+
+    Tool just finished: {tool_name.upper()}
     Target: {target}
-    Results:
-    {summary}
+    Results summary: {summary}
+    Available tools: {", ".join(available_tools)[:500]}
 
-    Current session state:
-    {self._build_state_context()}
-
-    Based on these results, suggest the BEST 1-3 follow-up tools from this list:
-    {", ".join(available_tools)}
-
-    Rules:
-    - Suggest tools that make sense for the specific findings
-    - Do NOT repeat a tool that was just run
-    - Prioritize the most impactful vulnerabilities first
-    - Return [] if nothing significant was found
-
-    For each suggestion, include the appropriate parameters for that tool.
-    Use your knowledge of what each service/vulnerability requires.
-
-    Respond ONLY with a JSON array (no other text):
-    [
-    {{
-        "tool": "tool_name",
-        "args": {{"target": "{target}"}},
-        "reason": "brief explanation of why this tool",
-        "priority": 1
-    }}
-    ]
-
-    priority: 1=high (critical/exploitable now), 2=medium, 3=low (informational only)."""
+    JSON now:"""
 
         try:
             with Live(Spinner("dots", text="[dim]AI planning next steps...[/dim]"), refresh_per_second=10):
                 response = self._ai.chat(
                     messages=[{"role": "user", "content": prompt}],
-                    system="You are a senior penetration tester. Return ONLY a JSON array. Use your security knowledge to choose the right tool for each finding.",
-                    max_tokens=600,
-                    temperature=0.3,  # Slightly higher for more diverse suggestions
+                    system="You return ONLY valid JSON arrays. No markdown. No backticks. No natural language. No code blocks. Just the JSON array.",
+                    max_tokens=300,  # Reduced from 600
+                    temperature=0.1,  # Lower for more predictable output
                 )
 
+            # CLEAN response - remove any markdown code blocks
+            response = response.strip()
+            
+            # Remove opening ``` and language specifiers
+            if response.startswith("```"):
+                lines = response.split("\n")
+                if lines and lines[0].startswith("```"):
+                    lines.pop(0)  # Remove opening ```
+                if lines and lines[-1].strip() == "```":
+                    lines.pop()   # Remove closing ```
+                response = "\n".join(lines).strip()
+                
+                # Remove "json" or "bash" if present after cleaning
+                if response.startswith("json"):
+                    response = response[4:].strip()
+                elif response.startswith("bash"):
+                    response = response[4:].strip()
+            
+            # Also handle case where response starts with ``` on same line
+            if response.startswith("```json"):
+                response = response[7:].strip()
+                if response.endswith("```"):
+                    response = response[:-3].strip()
+            elif response.startswith("```bash"):
+                response = response[7:].strip()
+                if response.endswith("```"):
+                    response = response[:-3].strip()
+            
             import re as _re
+            # Try to find JSON array - be more flexible
             arr_match = _re.search(r'\[.*\]', response, _re.DOTALL)
             if not arr_match:
-                return []
-            suggestions = json.loads(arr_match.group())
+                # Try to find even if broken across lines
+                single_line = response.replace('\n', ' ')
+                arr_match = _re.search(r'\[.*?\]', single_line)
+                if not arr_match:
+                    console.print(f"[dim yellow]No JSON array found in AI response: {response[:200]}[/dim yellow]")
+                    return []
+            
+            raw_json = arr_match.group()
+            suggestions = json.loads(raw_json)
+            
             if not isinstance(suggestions, list):
                 return []
 
@@ -1302,10 +1320,93 @@ Provide a clear, professional explanation in JSON format:
                         "priority": s.get("priority", 2),
                     })
             return valid
+            
+        except json.JSONDecodeError as e:
+            console.print(f"[dim red]JSON decode failed: {e}[/dim red]")
+            console.print(f"[dim red]Raw response: {response[:300]}[/dim red]")
+            return []
         except Exception as e:
             console.print(f"[dim red]Chain suggestion failed: {e}[/dim red]")
             return []
+    #  def _ai_chain_suggestions(self, tool_name: str, parsed: dict, args: dict) -> list[dict]:
+    #     """Ask the AI which tools to run next based on what was just found."""
+    #     target = args.get("target", "")
+    #     summary = _build_smart_summary(tool_name, parsed, target)
+    #     available_tools = list(self._tools.keys())
 
+    #     prompt = f"""You are Kernox AI. A penetration test tool just finished running.
+
+    # Tool: {tool_name.upper()}
+    # Target: {target}
+    # Results:
+    # {summary}
+
+    # Current session state:
+    # {self._build_state_context()}
+
+    # Based on these results, suggest the BEST 1-3 follow-up tools from this list:
+    # {", ".join(available_tools)}
+
+    # Rules:
+    # - Suggest tools that make sense for the specific findings
+    # - Do NOT repeat a tool that was just run
+    # - Prioritize the most impactful vulnerabilities first
+    # - Return [] if nothing significant was found
+
+    # For each suggestion, include the appropriate parameters for that tool.
+    # Use your knowledge of what each service/vulnerability requires.
+
+    # Respond ONLY with a JSON array (no other text):
+    # [
+    # {{
+    #     "tool": "tool_name",
+    #     "args": {{"target": "{target}"}},
+    #     "reason": "brief explanation of why this tool",
+    #     "priority": 1
+    # }}
+    # ]
+
+    # priority: 1=high (critical/exploitable now), 2=medium, 3=low (informational only)."""
+
+    #     try:
+    #         with Live(Spinner("dots", text="[dim]AI planning next steps...[/dim]"), refresh_per_second=10):
+    #             response = self._ai.chat(
+    #                 messages=[{"role": "user", "content": prompt}],
+    #                 system="You are a senior penetration tester. Return ONLY a JSON array. Use your security knowledge to choose the right tool for each finding.",
+    #                 max_tokens=600,
+    #                 temperature=0.3,  # Slightly higher for more diverse suggestions
+    #             )
+
+    #         import re as _re
+    #         arr_match = _re.search(r'\[.*\]', response, _re.DOTALL)
+    #         if not arr_match:
+    #             return []
+    #         suggestions = json.loads(arr_match.group())
+    #         if not isinstance(suggestions, list):
+    #             return []
+
+    #         valid = []
+    #         for s in suggestions[:3]:
+    #             if isinstance(s, dict) and s.get("tool") and s.get("tool") in self._tools:
+    #                 args_dict = s.get("args", {"target": target})
+    #                 if not isinstance(args_dict, dict):
+    #                     args_dict = {"target": target}
+                    
+    #                 # Ensure target is set if missing
+    #                 if "target" not in args_dict or not args_dict["target"]:
+    #                     args_dict["target"] = target
+                    
+    #                 valid.append({
+    #                     "tool": s["tool"],
+    #                     "args": args_dict,
+    #                     "reason": s.get("reason", "AI suggested"),
+    #                     "priority": s.get("priority", 2),
+    #                 })
+    #         return valid
+    #     except Exception as e:
+    #         console.print(f"[dim red]Chain suggestion failed: {e}[/dim red]")
+    #         return []
+ 
 
     def _fallback_chain(self, tool_name: str, parsed: dict, args: dict) -> list[dict]:
         """Deterministic fallback chain rules."""
