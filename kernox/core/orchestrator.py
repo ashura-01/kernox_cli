@@ -72,6 +72,7 @@ from kernox.tools.mail_crawler import MailCrawlerTool
 from kernox.tools.zapcli import ZapCliTool
 from kernox.tools.hydra import HydraTool
 from kernox.tools.theharvester import TheHarvesterTool
+from kernox.tools.live_discovery import LiveDiscoveryTool
 
 console = Console()
 
@@ -235,6 +236,16 @@ theharvester:
   CHAIN: run before or alongside mail_crawler for broader OSINT coverage
   Example: {"target": "example.com", "sources": "google,bing,crtsh,certspotter"}
 
+live_discovery:
+  args: target (CIDR like "192.168.1.0/24"), method (auto/arp/icmp), interface
+  Use for initial network reconnaissance to find live hosts on local network
+  Returns IP, MAC, vendor, OS for each discovered host
+  ALWAYS use when user asks: "find live hosts", "discover devices", "scan network", "what's on my network", "show me connected devices"
+  Examples:
+    - "find live hosts" → auto-detects network, uses ARP scan
+    - "scan 192.168.1.0/24 for devices" → {"target": "192.168.1.0/24"}
+    - "discover hosts on eth0" → {"interface": "eth0"}
+
 CHAINING RULES:
 - nmap finds port 80/443 → suggest nikto + ffuf + curl + zapcli (baseline)
 - nmap finds port 139/445 → suggest enum4linux + smbclient
@@ -329,6 +340,7 @@ class Orchestrator:
             "zapcli":        ZapCliTool(),
             "hydra":         HydraTool(),
             "theharvester":  TheHarvesterTool(),
+            "live_discovery": LiveDiscoveryTool(ai_client=self._ai, session_state=self._state), 
         }
         self._history: list[dict] = []
 
@@ -1825,6 +1837,7 @@ If WAF detected or unusual headers, use aggressive tampers and higher level/risk
 
         tools_info = [
             ("nmap",          "Port scanning & service fingerprinting"),
+            ("live_discovery","Live host discovery - IP, MAC, vendor, OS with AI learning"),  
             ("ffuf",          "Directory/vhost/parameter fuzzing"),
             ("gobuster",      "Directory, DNS & vhost enumeration"),
             ("nikto",         "Web vulnerability scanner"),
