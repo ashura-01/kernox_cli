@@ -858,7 +858,7 @@ JSON now:"""
     def _print_chain_suggestions(self, suggestions: List[Dict]) -> None:
         if not suggestions:
             return
-        console.print("\n[bold cyan]🔗 Smart Chain Suggestions[/bold cyan]")
+        console.print("\n[bold cyan] Smart Chain Suggestions[/bold cyan]")
         table = Table(show_header=True, header_style="bold magenta", box=box.SIMPLE_HEAVY)
         table.add_column("#", width=4, style="bold cyan")
         table.add_column("Tool", style="bold", width=16)
@@ -868,7 +868,9 @@ JSON now:"""
         pri_colors = {1: "bold red", 2: "bold yellow", 3: "cyan"}
         for i, s in enumerate(suggestions, 1):
             pri = s.get("priority", 2)
-            table.add_row(str(i), s["tool"], s["reason"], f"[{pri_colors.get(pri)}]{pri_labels.get(pri)}[/{pri_colors.get(pri)}]")
+            color = pri_colors.get(pri, "white")  # FIX: Default to "white" if pri not found
+            label = pri_labels.get(pri, "MED")     # FIX: Default to "MED" if pri not found
+            table.add_row(str(i), s["tool"], s["reason"], f"[{color}]{label}[/{color}]")
         console.print(table)
 
     def _print_summary(self, results: Dict) -> None:
