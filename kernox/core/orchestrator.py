@@ -915,8 +915,8 @@ Rules:
                 args["userlist"] = tmp.name
                 console.print(f"[dim]Hydra: {len(discovered_users)} discovered usernames loaded[/dim]")
 
-        # Special handling for mail_crawler (Python-based, no shell command)
-        if tool_name == "mail_crawler":
+# Special handling for Python-based tools (no shell command)
+        if tool_name in ("mail_crawler", "live_discovery"):
             console.print(f"[bold magenta]\n── {tool_name.upper()} ──[/bold magenta]")
             result = tool.run_direct(**args)
             parsed = result
@@ -926,6 +926,7 @@ Rules:
 
         # Build command and run via executor
         command = tool.build_command(**args)
+
         console.print(f"[bold magenta]\n── {tool_name.upper()} ──[/bold magenta]")
         result = self._executor.run(
             command,
