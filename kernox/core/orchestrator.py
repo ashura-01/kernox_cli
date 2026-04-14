@@ -72,7 +72,6 @@ from kernox.tools.mail_crawler import MailCrawlerTool
 from kernox.tools.zapcli import ZapCliTool
 from kernox.tools.hydra import HydraTool
 from kernox.tools.theharvester import TheHarvesterTool
-from kernox.tools.live_discovery import LiveDiscoveryTool
 
 console = Console()
 
@@ -236,16 +235,6 @@ theharvester:
   CHAIN: run before or alongside mail_crawler for broader OSINT coverage
   Example: {"target": "example.com", "sources": "google,bing,crtsh,certspotter"}
 
-live_discovery:
-  args: target (CIDR like "192.168.1.0/24"), method (auto/arp/icmp), interface
-  Use for initial network reconnaissance to find live hosts on local network
-  Returns IP, MAC, vendor, OS for each discovered host
-  ALWAYS use when user asks: "find live hosts", "discover devices", "scan network", "what's on my network", "show me connected devices"
-  Examples:
-    - "find live hosts" → auto-detects network, uses ARP scan
-    - "scan 192.168.1.0/24 for devices" → {"target": "192.168.1.0/24"}
-    - "discover hosts on eth0" → {"interface": "eth0"}
-
 CHAINING RULES:
 - nmap finds port 80/443 → suggest nikto + ffuf + curl + zapcli (baseline)
 - nmap finds port 139/445 → suggest enum4linux + smbclient
@@ -340,7 +329,6 @@ class Orchestrator:
             "zapcli":        ZapCliTool(),
             "hydra":         HydraTool(),
             "theharvester":  TheHarvesterTool(),
-            "live_discovery": LiveDiscoveryTool(ai_client=self._ai, session_state=self._state), 
         }
         self._history: list[dict] = []
 
@@ -925,14 +913,6 @@ Rules:
             format_results(tool_name, parsed)
             self._state.add_tool_result(tool=tool_name, target=args.get("target", ""), parsed=parsed)
             return parsed, None
-       
-        if tool_name == "live_discovery":
-            console.print(f"[bold magenta]\n── {tool_name.upper()} ──[/bold magenta]")
-            result = tool.run_direct(**args)
-            parsed = result
-            format_results(tool_name, parsed)
-            self._state.add_tool_result(tool=tool_name, target=args.get("target", ""), parsed=parsed)
-            return parsed, None        
 
         # Build command and run via executor
         command = tool.build_command(**args)
@@ -1845,7 +1825,6 @@ If WAF detected or unusual headers, use aggressive tampers and higher level/risk
 
         tools_info = [
             ("nmap",          "Port scanning & service fingerprinting"),
-            ("live_discovery","Live host discovery - IP, MAC, vendor, OS with AI learning"),  
             ("ffuf",          "Directory/vhost/parameter fuzzing"),
             ("gobuster",      "Directory, DNS & vhost enumeration"),
             ("nikto",         "Web vulnerability scanner"),
@@ -2218,7 +2197,6 @@ def _build_smart_summary(tool_name: str, parsed: dict, target: str) -> str:
 def _extract_json_plan(text: str) -> Optional[dict]:
     import re
 
-    # First try JSON object pattern
     pattern = r"```(?:json)?\s*(\{.*?\})\s*```"
     match = re.search(pattern, text, re.DOTALL)
     if match:
@@ -2234,21 +2212,6 @@ def _extract_json_plan(text: str) -> Optional[dict]:
         except json.JSONDecodeError:
             pass
 
-    # NEW: Handle bare JSON array (what your AI is returning)
-    if stripped.startswith("["):
-        try:
-            arr = json.loads(stripped)
-            if isinstance(arr, list):
-                # Wrap array into expected format
-                return {
-                    "analysis": "AI suggested tools",
-                    "steps": arr,
-                    "message": f"Suggested {len(arr)} tool(s)"
-                }
-        except json.JSONDecodeError:
-            pass
-
-    # Original bracket matching logic for objects...
     for start in [i for i, c in enumerate(text) if c == "{"]:
         depth = 0
         for i, c in enumerate(text[start:], start):
@@ -2261,7 +2224,9 @@ def _extract_json_plan(text: str) -> Optional[dict]:
                     try:
                         parsed = json.loads(candidate)
                         if isinstance(parsed, dict) and (
-                            "steps" in parsed or "message" in parsed or "analysis" in parsed
+                            "steps" in parsed or
+                            "message" in parsed or
+                            "analysis" in parsed
                         ):
                             return parsed
                     except json.JSONDecodeError:
