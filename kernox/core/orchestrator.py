@@ -72,6 +72,7 @@ from kernox.tools.mail_crawler import MailCrawlerTool
 from kernox.tools.zapcli import ZapCliTool
 from kernox.tools.hydra import HydraTool
 from kernox.tools.theharvester import TheHarvesterTool
+from kernox.tools.live_discovery import LiveDiscoveryTool
 
 console = Console()
 
@@ -134,6 +135,14 @@ gobuster:
 
 nikto:
   args: target (URL), mode (full/tuned/auth/sqli/ssl/quick/custom)
+
+live_discovery:
+  args: target (CIDR like 192.168.1.0/24 or "auto"), vendor_lookup (true/false), icmp_fallback (true/false)
+  Use for discovering live hosts on a network.
+  Finds all devices via ARP scan, adds MAC vendor lookup and TTL-based OS fingerprinting.
+  Examples:
+    - "discover network" → Auto-detects local subnet
+    - "discover 192.168.1.0/24" → Scans that range
 
 sqlmap:
   args: target (URL with param), flags
@@ -329,6 +338,7 @@ class Orchestrator:
             "zapcli":        ZapCliTool(),
             "hydra":         HydraTool(),
             "theharvester":  TheHarvesterTool(),
+            "live_discovery": LiveDiscoveryTool(ai_client=self._ai, session_state=self._state),  # ← ADD THIS
         }
         self._history: list[dict] = []
 

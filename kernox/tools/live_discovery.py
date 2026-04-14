@@ -1,888 +1,334 @@
-# """
-# Live host discovery tool for Kernox
-# Full orchestrator-grade AI integration:
-#   - Pre-flight: AI picks optimal scan strategy before running
-#   - Post-scan:  AI explains every host and finding automatically
-#   - Insights:   Structured vuln/risk records stored to session state
-#   - Chaining:   AI suggests next tools based on what was found
-#   - Learning:   Persistent MAC→vendor/OS cache across runs
-#   - Context:    Full session state injected into every AI call
-# """
-
-# from __future__ import annotations
-
-# import json
-# import os
-# import re
-# import socket
-# import subprocess
-# import ipaddress
-# from concurrent.futures import ThreadPoolExecutor, as_completed
-# from dataclasses import dataclass, field
-# from datetime import datetime
-# from pathlib import Path
-# from threading import Lock
-# from typing import Any, Dict, List, Optional
-
-# from rich.console import Console
-# from rich.live import Live
-# from rich.panel import Panel
-# from rich.markdown import Markdown
-# from rich.spinner import Spinner
-# from rich.table import Table
-# from rich import box
-
-# console = Console()
-
-# # ── Persistent AI learning cache ─────────────────────────────────────────────
-# AI_CACHE_PATH = Path.home() / ".kernox" / "ai_vendor_cache.json"
-
-
-# def _load_ai_cache() -> Dict[str, Dict]:
-#     try:
-#         if AI_CACHE_PATH.exists():
-#             with open(AI_CACHE_PATH) as f:
-#                 return json.load(f)
-#     except Exception:
-#         pass
-#     return {}
-
-
-# def _save_ai_cache(cache: Dict[str, Dict]) -> None:
-#     try:
-#         AI_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-#         with open(AI_CACHE_PATH, "w") as f:
-#             json.dump(cache, f, indent=2)
-#     except Exception as e:
-#         console.print(f"[yellow]Warning: Failed to persist AI cache: {e}[/yellow]")
-
-
-# # ── Data models ───────────────────────────────────────────────────────────────
-
-# @dataclass
-# class DiscoveredHost:
-#     """Complete host record — AI gets every field."""
-#     ip: str
-#     mac: str = "N/A"
-#     vendor: str = "Unknown"
-#     vendor_source: str = "unknown"
-#     os: str = "Unknown"
-#     os_confidence: int = 0
-#     os_source: str = "unknown"
-#     hostname: str = ""
-#     method: str = ""
-#     ttl: Optional[int] = None
-#     open_ports: List[int] = field(default_factory=list)
-#     udp_open_ports: List[int] = field(default_factory=list)
-#     ai_notes: str = ""
-#     risk_level: str = ""
-#     first_seen: str = field(default_factory=lambda: datetime.now().isoformat())
-
-
-# @dataclass
-# class HostInsight:
-#     """Structured AI insight — mirrors orchestrator AIInsight pattern."""
-#     ip: str
-#     vulnerability: str
-#     severity: str
-#     tool: str
-#     explanation: Dict[str, str]
-#     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
-
-
-# # ── Main tool ─────────────────────────────────────────────────────────────────
-
-# class LiveDiscoveryTool:
-
-#     name = "live_discovery"
-#     description = "Discover live hosts — AI learns MAC/vendor/OS mappings over time"
-
-#     CHAINABLE_TOOLS = [
-#         "nmap", "nikto", "ffuf", "gobuster", "whatweb", "nuclei",
-#         "enum4linux", "smbclient", "sslscan", "dnsrecon", "theharvester",
-#         "wafw00f", "onesixtyone", "wpscan",
-#     ]
-
-#     def __init__(self, ai_client=None, session_state=None):
-#         self._ai = ai_client
-#         self._state = session_state
-#         self._oui_cache: Dict[str, str] = {}
-#         self._ai_cache: Dict[str, Dict] = _load_ai_cache()
-#         self._ai_cache_dirty = False
-#         self._insights: List[HostInsight] = []
-#         self._host_lock = Lock()
-#         self._load_system_oui_db()
-
-#     # ── AI client compatibility shim ──────────────────────────────────────────
-
-#     def _ai_chat(self, messages: List[Dict], system: str = "", max_tokens: int = 500, temperature: float = 0.2) -> str:
-#         if self._ai is None:
-#             return ""
-#         try:
-#             if callable(getattr(self._ai, "chat", None)):
-#                 return self._ai.chat(messages=messages, system=system, max_tokens=max_tokens, temperature=temperature)
-#             if callable(getattr(getattr(self._ai, "messages", None), "create", None)):
-#                 resp = self._ai.messages.create(
-#                     model="claude-sonnet-4-20250514",
-#                     max_tokens=max_tokens,
-#                     system=system,
-#                     messages=messages,
-#                 )
-#                 return resp.content[0].text if resp.content else ""
-#             if callable(self._ai):
-#                 return self._ai(messages=messages, system=system, max_tokens=max_tokens)
-#         except Exception as e:
-#             console.print(f"[dim]AI call failed: {e}[/dim]")
-#         return ""
-
-#     # ── Compact host summary — single source of truth for all AI calls ────────
-
-#     def _compact_host_line(self, h: DiscoveredHost) -> str:
-#         """
-#         One terse line per host. Omits Unknown/empty fields entirely so the AI
-#         receives no noise. All AI prompts use this instead of building their own
-#         verbose representations.
-
-#         Example output:
-#           192.168.1.5 Cisco Windows(70%) tcp=[80,443] hostname.local
-#           192.168.1.9 tcp=[22,8080] udp=[161]
-#         """
-#         parts = [h.ip]
-#         if h.vendor != "Unknown":
-#             parts.append(h.vendor)
-#         if h.os != "Unknown":
-#             parts.append(f"{h.os}({h.os_confidence}%)")
-#         if h.open_ports:
-#             parts.append(f"tcp={h.open_ports}")
-#         if h.udp_open_ports:
-#             parts.append(f"udp={h.udp_open_ports}")
-#         if h.hostname:
-#             parts.append(h.hostname)
-#         return " ".join(parts)
-
-#     def _compact_summary(self, hosts: Dict[str, DiscoveredHost], target: str, limit: int = 10) -> str:
-#         """
-#         Compact multi-host block capped at `limit` hosts.
-#         Replaces the old _build_scan_summary which sent up to 15 verbose lines
-#         and was injected into three separate AI calls (pre-flight, post-scan,
-#         chain), tripling the token spend on the same data.
-#         """
-#         lines = [f"target={target} hosts={len(hosts)}"]
-#         for h in list(hosts.values())[:limit]:
-#             lines.append(self._compact_host_line(h))
-#         if len(hosts) > limit:
-#             lines.append(f"...+{len(hosts) - limit} more")
-#         return "\n".join(lines)
-
-#     # ── Public interface ──────────────────────────────────────────────────────
-
-#     def build_command(self, **_) -> List[str]:
-#         return []
-
-#     def parse(self, output: str) -> Dict[str, Any]:
-#         return {}
-
-#     def run_direct(
-#         self,
-#         target: str = None,
-#         method: str = "auto",
-#         interface: str = None,
-#         timeout: int = 30,
-#         quick_ports: bool = True,
-#         **kwargs,
-#     ) -> Dict[str, Any]:
-#         """Full discovery pipeline with AI at every stage."""
-#         if not target or target.lower() == "auto":
-#             target = self._detect_network_range(interface)
-#             console.print(f"[cyan]Auto-detected network: {target}[/cyan]")
-
-#         results: Dict[str, Any] = {
-#             "hosts": [], "total_hosts": 0, "method_used": method,
-#             "network_range": target, "interface": interface, "scan_duration": 0,
-#             "unknown_hosts": [], "known_hosts": [], "ai_inferred_hosts": [],
-#             "insights": [], "chain_suggestions": [],
-#         }
-
-#         start = datetime.now()
-#         hosts: Dict[str, DiscoveredHost] = {}
-
-#         if os.geteuid() != 0:
-#             console.print("[yellow]Warning: Run with sudo for best results[/yellow]")
-
-#         # ── 1: AI pre-flight ─────────────────────────────────────────────────
-#         strategy = self._ai_preflight(target, method, interface)
-#         effective_method = strategy.get("method", method)
-#         console.print(f"[cyan]Scanning {target} via {effective_method}...[/cyan]")
-#         if strategy.get("notes"):
-#             console.print(f"[dim]{strategy['notes']}[/dim]")
-
-#         # ── 2: Host enumeration ───────────────────────────────────────────────
-#         for h in self._arp_scan(target, interface, timeout):
-#             hosts[h.ip] = h
-
-#         if not hosts:
-#             console.print("[dim]ARP scan found nothing, trying ICMP...[/dim]")
-#             for h in self._icmp_scan(target, timeout):
-#                 hosts[h.ip] = h
-
-#         if not hosts:
-#             console.print("[yellow]No live hosts found. Check network connection.[/yellow]")
-#             results["scan_duration"] = (datetime.now() - start).seconds
-#             return results
-
-#         # ── 3: Parallel enrichment ────────────────────────────────────────────
-#         with ThreadPoolExecutor(max_workers=20) as ex:
-#             futures = []
-#             for host in hosts.values():
-#                 futures.append(ex.submit(self._resolve_hostname, host))
-#                 futures.append(ex.submit(self._detect_os_from_ttl, host))
-#                 if quick_ports:
-#                     futures.append(ex.submit(self._quick_port_probe, host))
-#                     futures.append(ex.submit(self._quick_port_probe_udp, host))
-#             for f in as_completed(futures):
-#                 try:
-#                     f.result()
-#                 except Exception:
-#                     pass
-
-#         # ── 4: Vendor lookup ──────────────────────────────────────────────────
-#         for host in hosts.values():
-#             self._lookup_vendor_smart(host)
-
-#         unknown_vendors = [h for h in hosts.values() if h.vendor_source == "unknown"]
-#         if unknown_vendors and self._ai:
-#             self._ai_infer_vendor_batch(unknown_vendors)
-
-#         # ── 5: AI OS fingerprinting ───────────────────────────────────────────
-#         low_conf = [h for h in hosts.values() if h.os_confidence < 60]
-#         if low_conf and self._ai:
-#             self._ai_os_fingerprint_batch(low_conf)
-
-#         # ── 6: Post-scan AI analysis ──────────────────────────────────────────
-#         if self._ai:
-#             self._post_scan_ai_analysis(hosts, target)
-
-#         # ── 7: Structured AI insights ─────────────────────────────────────────
-#         if self._ai:
-#             self._generate_ai_insights(hosts, target)
-
-#         # ── 8: AI chain suggestions ───────────────────────────────────────────
-#         sorted_hosts = sorted(hosts.values(), key=lambda x: [int(i) for i in x.ip.split(".")])
-#         chain = self._ai_chain_suggestions(sorted_hosts, target)
-#         results["chain_suggestions"] = chain
-#         if chain:
-#             self._print_chain_suggestions(chain)
-
-#         # ── 9: Persist AI knowledge ───────────────────────────────────────────
-#         if self._ai_cache_dirty:
-#             try:
-#                 _save_ai_cache(self._ai_cache)
-#                 self._ai_cache_dirty = False
-#             except Exception as e:
-#                 console.print(f"[yellow]Warning: AI cache not saved: {e}[/yellow]")
-
-#         # ── Categorise & finalise ─────────────────────────────────────────────
-#         for host in sorted_hosts:
-#             entry = {
-#                 "ip": host.ip, "mac": host.mac, "vendor": host.vendor,
-#                 "source": host.vendor_source, "os": host.os, "ai_notes": host.ai_notes,
-#             }
-#             if host.vendor_source in ("ai_inferred", "ai_cached"):
-#                 results["ai_inferred_hosts"].append(entry)
-#             elif host.vendor == "Unknown":
-#                 results["unknown_hosts"].append({"ip": host.ip, "mac": host.mac})
-#             else:
-#                 results["known_hosts"].append(entry)
-
-#         results["hosts"] = [self._host_to_dict(h) for h in sorted_hosts]
-#         results["total_hosts"] = len(results["hosts"])
-#         results["scan_duration"] = (datetime.now() - start).seconds
-#         results["insights"] = [
-#             {"ip": i.ip, "vulnerability": i.vulnerability, "severity": i.severity,
-#              "tool": i.tool, "explanation": i.explanation}
-#             for i in self._insights
-#         ]
-
-#         if self._state is not None and hasattr(self._state, "add_ai_insight"):
-#             for insight in self._insights:
-#                 self._state.add_ai_insight(
-#                     vulnerability=insight.vulnerability, severity=insight.severity,
-#                     tool=insight.tool, target=insight.ip, explanation=insight.explanation,
-#                 )
-
-#         self._print_summary(results)
-#         return results
-
-#     # ── AI: Pre-flight ────────────────────────────────────────────────────────
-
-#     def _ai_preflight(self, target: str, method: str, interface: str = None) -> Dict:
-#         if not self._ai:
-#             return {"method": method, "notes": ""}
-
-#         # Compact prompt — dropped the full session context dump that was injected
-#         # here previously. Session state (prior hosts, tool results, insights) does
-#         # not affect which scan method to pick; sending it was pure token waste.
-#         prompt = (
-#             f'target={target} method={method} iface={interface or "auto"}\n'
-#             f'Reply ONLY JSON: {{"method":"arp","notes":"reason","risk_level":"low"}}\n'
-#             f'methods: arp icmp both'
-#         )
-#         try:
-#             with Live(Spinner("dots", text="[dim]AI planning scan strategy...[/dim]"), refresh_per_second=10):
-#                 response = self._ai_chat(
-#                     messages=[{"role": "user", "content": prompt}],
-#                     system="Network security expert. Return ONLY a JSON object.",
-#                     max_tokens=80,       # Strategy JSON is ~50 tokens; was 200
-#                     temperature=0.1,
-#                 )
-#             m = re.search(r"\{.*\}", response, re.DOTALL)
-#             if m:
-#                 plan = json.loads(m.group())
-#                 console.print(Panel(
-#                     f"[bold]Strategy:[/bold] {plan.get('method', method).upper()}  "
-#                     f"[dim]{plan.get('notes', '')}[/dim]",
-#                     title="[cyan]AI — Scan Pre-flight[/cyan]",
-#                     border_style="cyan", box=box.SIMPLE,
-#                 ))
-#                 return plan
-#         except Exception:
-#             pass
-#         return {"method": method, "notes": ""}
-
-#     # ── AI: Post-scan analysis ────────────────────────────────────────────────
-
-#     def _post_scan_ai_analysis(self, hosts: Dict[str, DiscoveredHost], target: str) -> None:
-#         if not hosts:
-#             return
-
-#         # Compact summary capped at 8 hosts. Old code sent 15 verbose lines.
-#         summary = self._compact_summary(hosts, target, limit=8)
-#         prompt = (
-#             f"{summary}\n\n"
-#             f"Reply:\n**Finding:** <key finding>\n**Next:** ```bash\n<command>\n```"
-#         )
-#         try:
-#             with Live(Spinner("dots", text="[dim]AI analysing results...[/dim]"), refresh_per_second=10):
-#                 response = self._ai_chat(
-#                     messages=[{"role": "user", "content": prompt}],
-#                     system="Senior penetration tester. Be concise. Give one exact command.",
-#                     max_tokens=150,      # One finding + one command; was 250
-#                 )
-#             if response and not response.startswith("Error:"):
-#                 console.print(Panel(
-#                     Markdown(response),
-#                     title="[bold cyan]AI — live_discovery[/bold cyan]",
-#                     border_style="cyan", box=box.SIMPLE,
-#                 ))
-#         except Exception:
-#             pass
-
-#     # ── AI: Insights ──────────────────────────────────────────────────────────
-
-#     def _generate_ai_insights(self, hosts: Dict[str, DiscoveredHost], target: str) -> None:
-#         findings = []
-#         for host in hosts.values():
-#             ports = set(host.open_ports)
-#             if 23 in ports:
-#                 findings.append((host, "Telnet exposed (cleartext)", "high"))
-#             if 21 in ports:
-#                 findings.append((host, "FTP port open", "medium"))
-#             if ports & {139, 445}:
-#                 findings.append((host, "SMB/NetBIOS exposed", "high"))
-#             if 3389 in ports:
-#                 findings.append((host, "RDP exposed", "medium"))
-#             if 161 in host.udp_open_ports:
-#                 findings.append((host, "SNMP port open", "high"))
-#             if host.vendor == "Unknown" and host.os == "Unknown":
-#                 findings.append((host, "Unidentified device", "medium"))
-
-#         # Slice before the AI loop — only explain findings we'll keep.
-#         for host, vuln_name, severity in findings[:6]:
-#             # Removed the redundant "Context" field that duplicated vuln_name.
-#             prompt = (
-#                 f"ip={host.ip} vuln={vuln_name} sev={severity}\n"
-#                 f'Return ONLY JSON: {{"description":"","impact":"","recommendation":""}}'
-#             )
-#             try:
-#                 explanation_resp = self._ai_chat(
-#                     messages=[{"role": "user", "content": prompt}],
-#                     system="Security expert. Return ONLY JSON.",
-#                     max_tokens=120,      # 3-field JSON; was 500 default
-#                 )
-#                 m = re.search(r"\{.*\}", explanation_resp, re.DOTALL)
-#                 explanation = json.loads(m.group()) if m else None
-#                 if not explanation:
-#                     raise ValueError
-#             except Exception:
-#                 explanation = {
-#                     "description": vuln_name,
-#                     "impact": "May lead to unauthorised access.",
-#                     "recommendation": "Review service necessity.",
-#                 }
-
-#             self._insights.append(HostInsight(
-#                 ip=host.ip, vulnerability=vuln_name, severity=severity,
-#                 tool="live_discovery", explanation=explanation,
-#             ))
-
-#     # ── AI: Chain suggestions ─────────────────────────────────────────────────
-
-#     def _ai_chain_suggestions(self, hosts: List[DiscoveredHost], target: str) -> List[Dict]:
-#         if self._ai:
-#             suggestions = self._ai_chain_call(hosts, target)
-#             if suggestions:
-#                 return suggestions
-#         return self._fallback_chain(hosts, target)
-
-#     def _ai_chain_call(self, hosts: List[DiscoveredHost], target: str) -> List[Dict]:
-#         # Compact summary capped at 8 hosts. Old code called _build_scan_summary
-#         # (15 verbose lines) — same data already sent to post-scan AI, repeated.
-#         summary = self._compact_summary({h.ip: h for h in hosts}, target, limit=8)
-#         prompt = (
-#             f"{summary}\n"
-#             f"tools: {', '.join(self.CHAINABLE_TOOLS)}\n"
-#             f'Return ONLY JSON array: [{{"tool":"nmap","args":{{"target":"IP"}},"reason":"why","priority":1}}]'
-#         )
-#         try:
-#             with Live(Spinner("dots", text="[dim]AI planning next steps...[/dim]"), refresh_per_second=10):
-#                 response = self._ai_chat(
-#                     messages=[{"role": "user", "content": prompt}],
-#                     system="Return ONLY valid JSON array. No markdown.",
-#                     max_tokens=200,      # 4 suggestion objects; was 300
-#                     temperature=0.1,
-#                 )
-
-#             response = response.strip()
-#             if response.startswith("```"):
-#                 lines = response.split("\n")
-#                 if lines[0].startswith("```"):
-#                     lines.pop(0)
-#                 if lines and lines[-1].strip() == "```":
-#                     lines.pop()
-#                 response = "\n".join(lines).strip()
-#             for prefix in ("```json", "```bash", "json", "bash"):
-#                 if response.startswith(prefix):
-#                     response = response[len(prefix):].strip()
-#             if response.endswith("```"):
-#                 response = response[:-3].strip()
-
-#             m = re.search(r"\[.*\]", response, re.DOTALL)
-#             if not m:
-#                 m = re.search(r"\[.*?\]", response.replace("\n", " "))
-#             if not m:
-#                 return []
-
-#             suggestions = json.loads(m.group())
-#             if not isinstance(suggestions, list):
-#                 return []
-
-#             valid = []
-#             for s in suggestions[:4]:
-#                 if isinstance(s, dict) and s.get("tool") in self.CHAINABLE_TOOLS:
-#                     a = s.get("args", {"target": target})
-#                     if not isinstance(a, dict):
-#                         a = {"target": target}
-#                     if not a.get("target"):
-#                         a["target"] = target
-#                     valid.append({
-#                         "tool": s["tool"], "args": a,
-#                         "reason": s.get("reason", "AI suggested"),
-#                         "priority": s.get("priority", 2),
-#                     })
-#             return valid
-#         except Exception:
-#             return []
-
-#     def _fallback_chain(self, hosts: List[DiscoveredHost], target: str) -> List[Dict]:
-#         suggestions = []
-#         seen = set()
-
-#         def add(tool, args, reason, priority=2):
-#             if tool not in seen:
-#                 seen.add(tool)
-#                 suggestions.append({"tool": tool, "args": args, "reason": reason, "priority": priority})
-
-#         for host in hosts:
-#             ports = set(host.open_ports)
-#             if ports & {80, 443, 8080, 8443}:
-#                 scheme = "https" if (443 in ports or 8443 in ports) else "http"
-#                 url = f"{scheme}://{host.ip}"
-#                 add("whatweb", {"target": url}, f"Web on {host.ip}", 1)
-#                 add("nikto", {"target": url}, f"Web vuln scan on {host.ip}", 2)
-#                 add("nuclei", {"target": url, "mode": "quick"}, f"CVE scan on {host.ip}", 2)
-#             if ports & {139, 445}:
-#                 add("enum4linux", {"target": host.ip}, f"SMB on {host.ip}", 1)
-#             if 161 in host.udp_open_ports:
-#                 add("onesixtyone", {"target": host.ip}, f"SNMP on {host.ip}", 1)
-#             if 443 in ports or 8443 in ports:
-#                 port_str = "443" if 443 in ports else "8443"
-#                 add("sslscan", {"target": f"{host.ip}:{port_str}"}, f"SSL on {host.ip}", 2)
-
-#         if hosts:
-#             all_ips = " ".join(h.ip for h in hosts[:10])
-#             add("nmap", {"target": all_ips, "mode": "service"}, f"Service scan on {len(hosts)} hosts", 1)
-
-#         return sorted(suggestions, key=lambda s: s["priority"])
-
-#     # ── AI: Vendor batch ──────────────────────────────────────────────────────
-
-#     def _ai_infer_vendor_batch(self, hosts: List[DiscoveredHost]) -> None:
-#         if not self._ai or not hosts:
-#             return
-
-#         # Removed TTL from lines — TTL is an OS signal, not a vendor signal.
-#         # Sending it alongside MAC was noise that bloated the prompt for no gain.
-#         lines = [h.mac for h in hosts]
-#         prompt = (
-#             f"Infer vendor from MAC OUI. Return ONLY JSON array:\n"
-#             f'[{{"mac":"...","vendor":"..."}}]\n\n'
-#             + "\n".join(lines)
-#         )
-#         try:
-#             with Live(Spinner("dots", text="[dim]AI inferring vendors...[/dim]"), refresh_per_second=10):
-#                 response = self._ai_chat(
-#                     messages=[{"role": "user", "content": prompt}],
-#                     system="Return ONLY JSON array.",
-#                     max_tokens=min(400, len(hosts) * 30 + 20),  # Scale with host count
-#                 )
-#             inferences = self._parse_json_array(response)
-#             for item in inferences:
-#                 mac = item.get("mac", "")
-#                 oui = self._normalise_oui(mac)
-#                 vendor = item.get("vendor", "Unknown")
-#                 for h in hosts:
-#                     if h.mac == mac:
-#                         h.vendor = vendor
-#                         h.vendor_source = "ai_inferred"
-#                         break
-#                 if oui and vendor != "Unknown":
-#                     self._ai_cache[oui] = {"vendor": vendor, "learned_at": datetime.now().isoformat()}
-#                     self._ai_cache_dirty = True
-#         except Exception:
-#             pass
-
-#     # ── AI: OS fingerprint batch ──────────────────────────────────────────────
-
-#     def _ai_os_fingerprint_batch(self, hosts: List[DiscoveredHost]) -> None:
-#         if not self._ai or not hosts:
-#             return
-
-#         # Removed vendor from lines — these are low-confidence hosts where vendor
-#         # is already Unknown. TTL and open ports are the meaningful signals.
-#         lines = [f"ip={h.ip} ttl={h.ttl} tcp={h.open_ports}" for h in hosts]
-#         prompt = (
-#             f"Infer OS from TTL and open ports. Return ONLY JSON array:\n"
-#             f'[{{"ip":"...","os":"...","confidence":0}}]\n\n'
-#             + "\n".join(lines)
-#         )
-#         try:
-#             with Live(Spinner("dots", text="[dim]AI fingerprinting OS...[/dim]"), refresh_per_second=10):
-#                 response = self._ai_chat(
-#                     messages=[{"role": "user", "content": prompt}],
-#                     system="Return ONLY JSON array.",
-#                     max_tokens=min(300, len(hosts) * 25 + 20),  # Scale with host count
-#                 )
-#             inferences = self._parse_json_array(response)
-#             host_map = {h.ip: h for h in hosts}
-#             for item in inferences:
-#                 h = host_map.get(item.get("ip", ""))
-#                 if not h:
-#                     continue
-#                 confidence = item.get("confidence", 50)
-#                 if confidence > h.os_confidence:
-#                     h.os = item.get("os", h.os)
-#                     h.os_confidence = confidence
-#                     h.os_source = "ai_inferred"
-#                 oui = self._normalise_oui(h.mac)
-#                 if oui and confidence >= 60:
-#                     self._ai_cache.setdefault(oui, {})["os"] = h.os
-#                     self._ai_cache_dirty = True
-#         except Exception:
-#             pass
-
-#     # ── State context ─────────────────────────────────────────────────────────
-
-#     def _build_state_context(self) -> str:
-#         """Kept for external callers/subclasses. No longer injected into AI prompts."""
-#         lines = ["=== CURRENT SESSION STATE ==="]
-#         if self._state is not None:
-#             if hasattr(self._state, "hosts") and self._state.hosts:
-#                 lines.append(f"Hosts scanned: {', '.join(self._state.hosts.keys())}")
-#             else:
-#                 lines.append("Hosts scanned: None")
-#             if hasattr(self._state, "get_tool_results"):
-#                 lines.append(f"Tools run: {len(self._state.get_tool_results())}")
-#             if hasattr(self._state, "get_ai_insights"):
-#                 insights = self._state.get_ai_insights()
-#                 if insights:
-#                     for i in insights[-3:]:
-#                         lines.append(f"  [{i.severity.upper()}] {i.vulnerability}")
-#         else:
-#             lines.append("Standalone run — no session state")
-#         lines.append(f"AI cache entries: {len(self._ai_cache)}")
-#         lines.append("=== END STATE ===")
-#         return "\n".join(lines)
-
-#     # ── Discovery methods ─────────────────────────────────────────────────────
-
-#     def _arp_scan(self, network: str, interface: str = None, timeout: int = 30) -> List[DiscoveredHost]:
-#         hosts = []
-#         if self._check_command("arp-scan"):
-#             try:
-#                 cmd = ["sudo", "arp-scan", network, "--timeout", str(timeout)]
-#                 if interface:
-#                     cmd.extend(["--interface", interface])
-#                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 10)
-#                 for line in result.stdout.split("\n"):
-#                     parts = line.strip().split("\t")
-#                     if len(parts) >= 2 and re.match(r"\d+\.\d+\.\d+\.\d+", parts[0]):
-#                         mac = parts[1] if len(parts) > 1 else "N/A"
-#                         vendor = parts[2] if len(parts) > 2 else "Unknown"
-#                         hosts.append(DiscoveredHost(
-#                             ip=parts[0], mac=mac, vendor=vendor,
-#                             vendor_source="arp_scan" if vendor != "Unknown" else "unknown",
-#                             method="arp-scan",
-#                         ))
-#             except Exception as e:
-#                 console.print(f"[dim]arp-scan error: {e}[/dim]")
-#         if not hosts:
-#             hosts = self._fallback_arp_scan(network)
-#         return hosts
-
-#     def _fallback_arp_scan(self, network: str) -> List[DiscoveredHost]:
-#         hosts = []
-#         try:
-#             ips = [str(ip) for ip in ipaddress.ip_network(network, strict=False).hosts()][:254]
-#             with ThreadPoolExecutor(max_workers=50) as ex:
-#                 ex.map(self._quick_ping, ips)
-#             result = subprocess.run(["arp", "-n"], capture_output=True, text=True, timeout=10)
-#             for line in result.stdout.split("\n"):
-#                 parts = line.split()
-#                 if len(parts) >= 3 and re.match(r"\d+\.\d+\.\d+\.\d+", parts[0]):
-#                     hosts.append(DiscoveredHost(ip=parts[0], mac=parts[2], method="arp-cache"))
-#         except Exception:
-#             pass
-#         return hosts
-
-#     def _icmp_scan(self, network: str, timeout: int = 60) -> List[DiscoveredHost]:
-#         hosts = []
-#         try:
-#             ips = [str(ip) for ip in ipaddress.ip_network(network, strict=False).hosts()][:254]
-#             with ThreadPoolExecutor(max_workers=50) as ex:
-#                 futures = {ex.submit(self._ping_host, ip): ip for ip in ips}
-#                 for f in as_completed(futures, timeout=timeout):
-#                     ip = f.result()
-#                     if ip:
-#                         hosts.append(DiscoveredHost(ip=ip, method="icmp"))
-#         except Exception as e:
-#             console.print(f"[dim]ICMP scan error: {e}[/dim]")
-#         return hosts
-
-#     # ── Enrichment methods ────────────────────────────────────────────────────
-
-#     def _quick_port_probe(self, host: DiscoveredHost, ports: List[int] = None) -> None:
-#         """TCP-only probe. SNMP (UDP 161) is handled by _quick_port_probe_udp."""
-#         if ports is None:
-#             ports = [21, 22, 23, 25, 80, 135, 139, 443, 445, 3389, 8080, 8443]
-#         open_ports = []
-#         for port in ports:
-#             try:
-#                 with socket.create_connection((host.ip, port), timeout=0.5):
-#                     open_ports.append(port)
-#             except Exception:
-#                 pass
-#         with self._host_lock:
-#             host.open_ports = open_ports
-
-#     def _quick_port_probe_udp(self, host: DiscoveredHost, ports: List[int] = None) -> None:
-#         """UDP probe for services that cannot be detected via TCP (e.g. SNMP)."""
-#         if ports is None:
-#             ports = [161]
-#         udp_open = []
-#         for port in ports:
-#             try:
-#                 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-#                 sock.settimeout(1.0)
-#                 sock.sendto(b"", (host.ip, port))
-#                 try:
-#                     sock.recvfrom(1024)
-#                     udp_open.append(port)
-#                 except socket.timeout:
-#                     udp_open.append(port)  # No ICMP port-unreachable → open|filtered
-#                 except Exception:
-#                     pass
-#                 finally:
-#                     sock.close()
-#             except Exception:
-#                 pass
-#         with self._host_lock:
-#             host.udp_open_ports = udp_open
-
-#     def _lookup_vendor_smart(self, host: DiscoveredHost) -> None:
-#         if host.vendor != "Unknown" and host.vendor_source not in ("unknown", ""):
-#             return
-#         oui = self._normalise_oui(host.mac)
-#         if not oui:
-#             return
-#         if oui in self._ai_cache:
-#             host.vendor = self._ai_cache[oui].get("vendor", host.vendor)
-#             host.vendor_source = "ai_cached"
-#             return
-#         if oui in self._oui_cache:
-#             host.vendor = self._oui_cache[oui]
-#             host.vendor_source = "oui_db"
-#             return
-#         host.vendor_source = "unknown"
-
-#     def _detect_os_from_ttl(self, host: DiscoveredHost) -> None:
-#         try:
-#             result = subprocess.run(
-#                 ["ping", "-c", "1", "-W", "2", host.ip],
-#                 capture_output=True, text=True, timeout=3,
-#             )
-#             m = re.search(r"ttl=(\d+)", result.stdout.lower())
-#             if m:
-#                 ttl = int(m.group(1))
-#                 if ttl <= 64:
-#                     os_str, conf, src = "Linux/Unix", 70, "ttl"
-#                 elif ttl <= 128:
-#                     os_str, conf, src = "Windows", 70, "ttl"
-#                 else:
-#                     os_str, conf, src = "Network Device", 50, "ttl"
-#                 with self._host_lock:
-#                     host.ttl = ttl
-#                     host.os = os_str
-#                     host.os_confidence = conf
-#                     host.os_source = src
-#         except Exception:
-#             pass
-
-#     def _resolve_hostname(self, host: DiscoveredHost) -> None:
-#         try:
-#             name = socket.gethostbyaddr(host.ip)[0]
-#             if name and name != host.ip:
-#                 with self._host_lock:
-#                     host.hostname = name
-#         except Exception:
-#             pass
-
-#     # ── OUI database ──────────────────────────────────────────────────────────
-
-#     def _load_system_oui_db(self) -> None:
-#         for path in [
-#             "/usr/share/arp-scan/ieee-oui.txt",
-#             "/usr/local/share/arp-scan/ieee-oui.txt",
-#             "/var/lib/arp-scan/ieee-oui.txt",
-#         ]:
-#             if Path(path).exists():
-#                 try:
-#                     with open(path) as f:
-#                         for line in f:
-#                             line = line.strip()
-#                             if line and not line.startswith("#"):
-#                                 parts = line.split("\t")
-#                                 if len(parts) >= 2:
-#                                     self._oui_cache[parts[0].strip().upper()] = parts[1].strip()
-#                     console.print(f"[dim]Loaded {len(self._oui_cache)} OUI entries[/dim]")
-#                     return
-#                 except Exception:
-#                     pass
-#         console.print("[dim]No OUI DB found. AI will learn from scans.[/dim]")
-
-#     # ── Display helpers ───────────────────────────────────────────────────────
-
-#     def _print_chain_suggestions(self, suggestions: List[Dict]) -> None:
-#         if not suggestions:
-#             return
-#         console.print("\n[bold cyan] Smart Chain Suggestions[/bold cyan]")
-#         table = Table(show_header=True, header_style="bold magenta", box=box.SIMPLE_HEAVY)
-#         table.add_column("#", width=4, style="bold cyan")
-#         table.add_column("Tool", style="bold", width=16)
-#         table.add_column("Reason")
-#         table.add_column("Priority", width=8)
-#         pri_labels = {1: "HIGH", 2: "MED", 3: "LOW"}
-#         pri_colors = {1: "bold red", 2: "bold yellow", 3: "cyan"}
-#         for i, s in enumerate(suggestions, 1):
-#             pri = s.get("priority", 2)
-#             color = pri_colors.get(pri, "white")
-#             label = pri_labels.get(pri, "MED")
-#             table.add_row(str(i), s["tool"], s["reason"], f"[{color}]{label}[/{color}]")
-#         console.print(table)
-
-#     def _print_summary(self, results: Dict) -> None:
-#         console.print(f"\n[green]✓ Found {results['total_hosts']} live hosts[/green]")
-#         if results["ai_inferred_hosts"]:
-#             console.print(f"[cyan]✦ AI inferred {len(results['ai_inferred_hosts'])} vendor/OS fields[/cyan]")
-#         if results["insights"]:
-#             console.print(f"[yellow]⚠ {len(results['insights'])} security insights generated[/yellow]")
-
-#     # ── Helpers ───────────────────────────────────────────────────────────────
-
-#     @staticmethod
-#     def _normalise_oui(mac: str) -> str:
-#         if not mac or mac == "N/A":
-#             return ""
-#         clean = mac.upper().replace("-", ":").replace(".", "")
-#         if ":" not in clean and len(clean) == 12:
-#             clean = ":".join(clean[i:i+2] for i in range(0, 12, 2))
-#         parts = clean.split(":")
-#         return ":".join(parts[:3]) if len(parts) >= 3 else ""
-
-#     @staticmethod
-#     def _parse_json_array(text: str) -> List[Dict]:
-#         text = re.sub(r"```(?:json)?", "", text).strip()
-#         m = re.search(r"\[.*\]", text, re.DOTALL)
-#         if m:
-#             try:
-#                 return json.loads(m.group())
-#             except Exception:
-#                 pass
-#         return []
-
-#     def _quick_ping(self, ip: str) -> None:
-#         try:
-#             subprocess.run(["ping", "-c", "1", "-W", "1", ip], capture_output=True, timeout=2)
-#         except Exception:
-#             pass
-
-#     def _ping_host(self, ip: str) -> Optional[str]:
-#         try:
-#             r = subprocess.run(["ping", "-c", "1", "-W", "1", ip], capture_output=True, text=True, timeout=2)
-#             return ip if r.returncode == 0 else None
-#         except Exception:
-#             return None
-
-#     def _check_command(self, cmd: str) -> bool:
-#         try:
-#             subprocess.run(["which", cmd], capture_output=True, check=True)
-#             return True
-#         except Exception:
-#             return False
-
-#     def _detect_network_range(self, interface: str = None) -> str:
-#         try:
-#             result = subprocess.run(["ip", "route", "show", "default"], capture_output=True, text=True)
-#             if result.stdout:
-#                 m = re.search(r"\bdev\s+(\S+)", result.stdout)
-#                 iface = m.group(1) if m else None
-#                 if iface:
-#                     addr = subprocess.run(["ip", "-4", "addr", "show", iface], capture_output=True, text=True)
-#                     m2 = re.search(r"inet (\d+\.\d+\.\d+\.\d+)/(\d+)", addr.stdout)
-#                     if m2:
-#                         ip_parts = m2.group(1).split(".")
-#                         return f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}.0/{m2.group(2)}"
-#         except Exception:
-#             pass
-#         return "192.168.1.0/24"
-
-#     @staticmethod
-#     def _host_to_dict(h: DiscoveredHost) -> Dict[str, Any]:
-#         return {
-#             "ip": h.ip, "mac": h.mac, "vendor": h.vendor,
-#             "vendor_source": h.vendor_source, "os": h.os,
-#             "os_confidence": h.os_confidence, "os_source": h.os_source,
-#             "hostname": h.hostname, "ttl": h.ttl,
-#             "open_ports": h.open_ports, "udp_open_ports": h.udp_open_ports,
-#             "ai_notes": h.ai_notes, "risk_level": h.risk_level,
-#             "discovered_by": h.method, "first_seen": h.first_seen,
-#         }
+"""
+kernox.tools.live_discovery - Network host discovery using Scapy.
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import socket
+import time
+from typing import Dict, List, Optional
+
+from rich.console import Console
+from rich.table import Table
+from rich import box
+
+console = Console()
+
+# Try to import Scapy
+try:
+    from scapy.all import ARP, Ether, srp, IP, ICMP, sr1
+    SCAPY_AVAILABLE = True
+except ImportError:
+    SCAPY_AVAILABLE = False
+
+
+class LiveDiscoveryTool:
+    """Discover live hosts on network using ARP scan + optional ICMP."""
+
+    name = "live_discovery"
+    description = "Discover live hosts on local network (ARP scan)"
+
+    def __init__(self, ai_client=None, session_state=None):
+        self._ai = ai_client
+        self._state = session_state
+
+    def run_direct(
+        self,
+        target: str = None,
+        timeout: float = 2.0,
+        vendor_lookup: bool = True,
+        icmp_fallback: bool = True,
+        silent: bool = True,
+        **kwargs,
+    ) -> Dict:
+        """
+        Discover live hosts on network.
+
+        Args:
+            target: CIDR network (e.g., 192.168.1.0/24) or None for auto-detect
+            timeout: ARP and ICMP timeout in seconds
+            vendor_lookup: Query macvendors.com API for vendor names
+            icmp_fallback: Also try ICMP ping for cross-subnet discovery
+            silent: Suppress all terminal output
+        """
+        if not SCAPY_AVAILABLE:
+            return self._fallback_no_scapy(target, silent)
+
+        # Get network range
+        if not target or target.lower() == "auto":
+            target = self._detect_local_range()
+            if not silent:
+                console.print(f"[cyan]Auto-detected network: {target}[/cyan]")
+
+        if not silent:
+            console.print(f"[cyan]Scanning {target}...[/cyan]")
+
+        # Step 1: ARP scan (primary - finds everything on local subnet)
+        devices = self._arp_scan(target, timeout)
+
+        # Step 2: ICMP fallback (for cross-subnet or if ARP found nothing)
+        if icmp_fallback and not devices:
+            if not silent:
+                console.print("[dim]ARP found nothing, trying ICMP sweep...[/dim]")
+            devices = self._icmp_sweep(target, timeout)
+
+        if not devices:
+            if not silent:
+                console.print("[yellow]No live hosts found.[/yellow]")
+            return {"hosts": [], "total": 0, "network": target}
+
+        # Step 3: Enrich each device (TTL, OS, vendor)
+        if not silent:
+            console.print(f"[dim]Enriching {len(devices)} host(s)...[/dim]")
+
+        for device in devices:
+            self._enrich_device(device, timeout, vendor_lookup)
+
+        # Step 4: Filter out gateway and broadcast
+        devices = self._filter_hosts(devices, target)
+
+        # Step 5: Sort by IP
+        devices.sort(key=lambda d: ipaddress.ip_address(d["ip"]))
+
+        # Step 6: Display results (if not silent)
+        if not silent:
+            self._print_results(devices, target)
+
+        # Step 7: AI analysis (only IPs)
+        ai_response = None
+        if self._ai and devices:
+            ai_response = self._ai_analyze([d["ip"] for d in devices], target)
+
+        return {
+            "hosts": devices,
+            "total": len(devices),
+            "network": target,
+            "ai_suggestion": ai_response,
+        }
+
+    # ── Core scanning ─────────────────────────────────────────────────────────
+
+    def _arp_scan(self, ip_range: str, timeout: float) -> List[Dict]:
+        """ARP scan using Scapy."""
+        try:
+            ipaddress.ip_network(ip_range, strict=False)
+        except ValueError:
+            return []
+
+        # Create ARP request packet
+        arp_req = ARP(pdst=ip_range)
+        ether = Ether(dst="ff:ff:ff:ff:ff:ff")
+        packet = ether / arp_req
+
+        # Send and receive
+        try:
+            answered, _ = srp(packet, timeout=timeout, verbose=0)
+        except Exception:
+            return []
+
+        devices = []
+        for _, rcv in answered:
+            devices.append({
+                "ip": rcv.psrc,
+                "mac": rcv.hwsrc.upper(),
+                "method": "arp",
+            })
+        return devices
+
+    def _icmp_sweep(self, ip_range: str, timeout: float) -> List[Dict]:
+        """ICMP ping sweep using Scapy."""
+        try:
+            net = ipaddress.ip_network(ip_range, strict=False)
+            ips = [str(ip) for ip in net.hosts()][:254]
+        except Exception:
+            return []
+
+        devices = []
+        for ip in ips:
+            try:
+                pkt = IP(dst=ip) / ICMP()
+                reply = sr1(pkt, timeout=timeout, verbose=0)
+                if reply:
+                    devices.append({
+                        "ip": ip,
+                        "mac": "",
+                        "method": "icmp",
+                    })
+            except Exception:
+                continue
+        return devices
+
+    # ── Enrichment ────────────────────────────────────────────────────────────
+
+    def _get_ttl(self, ip: str, timeout: float) -> Optional[int]:
+        """Get TTL from ICMP response."""
+        try:
+            pkt = IP(dst=ip) / ICMP()
+            reply = sr1(pkt, timeout=timeout, verbose=0)
+            if reply:
+                return reply.ttl
+        except Exception:
+            pass
+        return None
+
+    def _guess_os_from_ttl(self, ttl: Optional[int]) -> str:
+        """Fingerprint OS from TTL value."""
+        if ttl is None:
+            return "Unknown"
+        if ttl <= 64:
+            return "Linux/Unix/macOS"
+        if ttl <= 128:
+            return "Windows"
+        if ttl <= 255:
+            return "Network Device"
+        return "Unknown"
+
+    def _get_vendor(self, mac: str) -> str:
+        """Look up vendor from macvendors.com API."""
+        if not mac or mac == "":
+            return "N/A"
+        try:
+            import requests
+            url = f"https://api.macvendors.com/{mac}"
+            r = requests.get(url, timeout=3)
+            if r.status_code == 200:
+                return r.text.strip()
+            if r.status_code == 404:
+                return "Unknown vendor"
+        except ImportError:
+            return "requests not installed"
+        except Exception:
+            pass
+        return "Lookup failed"
+
+    def _enrich_device(self, device: Dict, timeout: float, vendor_lookup: bool) -> None:
+        """Add TTL, OS, and vendor to device dict."""
+        ip = device["ip"]
+        mac = device.get("mac", "")
+
+        # Get TTL and guess OS
+        ttl = self._get_ttl(ip, timeout)
+        os_guess = self._guess_os_from_ttl(ttl)
+
+        device["ttl"] = ttl
+        device["os"] = os_guess
+
+        # Vendor lookup (with rate limiting for API)
+        if vendor_lookup and mac:
+            device["vendor"] = self._get_vendor(mac)
+            time.sleep(0.5)  # Be polite to free API (1 req/sec)
+        else:
+            device["vendor"] = "Disabled"
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _detect_local_range(self) -> str:
+        """Auto-detect local subnet."""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+            parts = local_ip.rsplit(".", 1)
+            return f"{parts[0]}.0/24"
+        except Exception:
+            return "192.168.1.0/24"
+
+    def _get_gateway(self) -> Optional[str]:
+        """Get default gateway IP."""
+        try:
+            import subprocess as sp
+            r = sp.run(["ip", "route", "show", "default"], capture_output=True, text=True)
+            import re
+            m = re.search(r"via\s+(\d+\.\d+\.\d+\.\d+)", r.stdout)
+            return m.group(1) if m else None
+        except Exception:
+            return None
+
+    def _filter_hosts(self, devices: List[Dict], network: str) -> List[Dict]:
+        """Remove gateway and broadcast addresses."""
+        gateway = self._get_gateway()
+        try:
+            net = ipaddress.ip_network(network, strict=False)
+            broadcast = str(net.broadcast_address)
+            network_addr = str(net.network_address)
+        except Exception:
+            broadcast, network_addr = "", ""
+
+        filtered = []
+        for d in devices:
+            ip = d["ip"]
+            if ip in (gateway, broadcast, network_addr):
+                continue
+            if ip.startswith(("224.", "239.", "127.")):
+                continue
+            filtered.append(d)
+        return filtered
+
+    def _print_results(self, devices: List[Dict], network: str) -> None:
+        """Display results in a clean table."""
+        if not devices:
+            console.print("[yellow]No live hosts found.[/yellow]")
+            return
+
+        table = Table(title=f"Live Hosts on {network}", box=box.HEAVY)
+        table.add_column("#", style="cyan", width=4)
+        table.add_column("IP", style="green", width=16)
+        table.add_column("MAC", style="dim", width=18)
+        table.add_column("OS (TTL)", style="yellow", width=20)
+        table.add_column("Vendor", style="white", width=25)
+
+        for i, d in enumerate(devices, 1):
+            table.add_row(
+                str(i),
+                d["ip"],
+                d.get("mac", "?")[:17],
+                f"{d.get('os', '?')} ({d.get('ttl', '?')})",
+                d.get("vendor", "?")[:25],
+            )
+
+        console.print(table)
+        console.print(f"\n[green]✓ Found {len(devices)} live host(s)[/green]")
+
+    def _ai_analyze(self, ips: List[str], network: str) -> Optional[str]:
+        """Single AI call - only gets IPs."""
+        if not self._ai or not ips:
+            return None
+
+        ip_str = ", ".join(ips[:15])
+        if len(ips) > 15:
+            ip_str += f" (+{len(ips)-15} more)"
+
+        prompt = f"Network: {network}\nIPs: {ip_str}\nWhich IPs to prioritize for scanning?"
+
+        try:
+            response = self._ai.chat(
+                messages=[{"role": "user", "content": prompt}],
+                system="Brief. Return only IPs and one sentence why.",
+                max_tokens=100,
+            )
+            if response:
+                console.print(Panel(
+                    response,
+                    title="[cyan]AI — Priority Targets[/cyan]",
+                    border_style="cyan",
+                    box=box.SIMPLE,
+                ))
+            return response
+        except Exception:
+            return None
+
+    def _fallback_no_scapy(self, target: str, silent: bool) -> Dict:
+        """Fallback when Scapy is not installed."""
+        if not silent:
+            console.print("[red]Scapy not installed. Run: pip install scapy[/red]")
+        return {"hosts": [], "total": 0, "network": target or "unknown", "error": "scapy missing"}
+
+
+if __name__ == "__main__":
+    tool = LiveDiscoveryTool()
+    result = tool.run_direct(silent=False)
+    print(f"\nFound: {result['total']} hosts")
+    if result.get('ai_suggestion'):
+        print(f"\nAI: {result['ai_suggestion']}")
