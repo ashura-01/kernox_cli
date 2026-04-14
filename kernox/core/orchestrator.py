@@ -2208,6 +2208,7 @@ def _build_smart_summary(tool_name: str, parsed: dict, target: str) -> str:
 def _extract_json_plan(text: str) -> Optional[dict]:
     import re
 
+    # First try JSON object pattern
     pattern = r"```(?:json)?\s*(\{.*?\})\s*```"
     match = re.search(pattern, text, re.DOTALL)
     if match:
@@ -2223,6 +2224,21 @@ def _extract_json_plan(text: str) -> Optional[dict]:
         except json.JSONDecodeError:
             pass
 
+    # NEW: Handle bare JSON array (what your AI is returning)
+    if stripped.startswith("["):
+        try:
+            arr = json.loads(stripped)
+            if isinstance(arr, list):
+                # Wrap array into expected format
+                return {
+                    "analysis": "AI suggested tools",
+                    "steps": arr,
+                    "message": f"Suggested {len(arr)} tool(s)"
+                }
+        except json.JSONDecodeError:
+            pass
+
+    # Original bracket matching logic for objects...
     for start in [i for i, c in enumerate(text) if c == "{"]:
         depth = 0
         for i, c in enumerate(text[start:], start):
@@ -2235,9 +2251,7 @@ def _extract_json_plan(text: str) -> Optional[dict]:
                     try:
                         parsed = json.loads(candidate)
                         if isinstance(parsed, dict) and (
-                            "steps" in parsed or
-                            "message" in parsed or
-                            "analysis" in parsed
+                            "steps" in parsed or "message" in parsed or "analysis" in parsed
                         ):
                             return parsed
                     except json.JSONDecodeError:
