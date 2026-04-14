@@ -510,45 +510,45 @@ def format_whatweb(parsed: dict) -> None:
     from rich.tree import Tree
     from rich.syntax import Syntax
     import json
-    
+
     console = Console()
-    
+
     # Build header with all metadata
     header_lines = []
-    
+
     if parsed.get("url"):
         header_lines.append(f"[dim]URL:[/dim] [cyan]{parsed['url']}[/cyan]")
-    
+
     if parsed.get("ip"):
         header_lines.append(f"[dim]IP:[/dim] [bold cyan]{parsed['ip']}[/bold cyan]")
-    
+
     status = parsed.get("status_code")
     status_text = parsed.get("status_text", "")
     if status:
         status_color = "green" if status == 200 else "yellow" if 300 <= status < 400 else "red"
         header_lines.append(f"[dim]Status:[/dim] [{status_color}]{status} {status_text}[/{status_color}]")
-    
+
     if parsed.get("title"):
         header_lines.append(f"[dim]Title:[/dim] [bold white]{parsed['title']}[/bold white]")
-    
+
     if parsed.get("server"):
         header_lines.append(f"[dim]Server:[/dim] [yellow]{parsed['server'][:100]}[/yellow]")
-    
+
     if parsed.get("powered_by"):
         header_lines.append(f"[dim]X-Powered-By:[/dim] [yellow]{parsed['powered_by']}[/yellow]")
-    
+
     if parsed.get("redirect"):
         header_lines.append(f"[dim]Redirect:[/dim] [cyan]{parsed['redirect']}[/cyan]")
-    
+
     if parsed.get("country"):
         header_lines.append(f"[dim]Country:[/dim] {parsed['country']}")
-    
+
     if parsed.get("cookies"):
         header_lines.append(f"[dim]Cookies:[/dim] {', '.join(parsed['cookies'])}")
-    
+
     header_lines.append(f"\n[dim]Total Plugins:[/dim] [bold cyan]{len(parsed.get('plugins', {}))}[/bold cyan]")
     header_lines.append(f"[dim]Technologies:[/dim] [bold]{len(parsed.get('technologies', []))}[/bold]")
-    
+
     # Main header panel
     console.print(Panel(
         "\n".join(header_lines),
@@ -557,12 +557,12 @@ def format_whatweb(parsed: dict) -> None:
         box=box.HEAVY,
         padding=(1, 2)
     ))
-    
+
     # Table of ALL plugins with their values
     plugins = parsed.get("plugins", {})
     if plugins:
         console.print("\n[bold magenta]📋 All Plugins Detected[/bold magenta]")
-        
+
         table = Table(
             show_header=True,
             header_style="bold magenta",
@@ -573,21 +573,21 @@ def format_whatweb(parsed: dict) -> None:
         table.add_column("Plugin", style="bold cyan", width=20)
         table.add_column("Value", style="white", no_wrap=False)
         table.add_column("Version", style="yellow", width=15)
-        
+
         # Build version lookup
         version_map = {v["tech"]: v["version"] for v in parsed.get("versions", [])}
-        
+
         # Sort plugins alphabetically
         for plugin_name in sorted(plugins.keys()):
             value = plugins[plugin_name]
             version = version_map.get(plugin_name, "")
-            
-            # Truncate long values but show full on hover? 
+
+            # Truncate long values but show full on hover?
             # For now, truncate with indicator
             display_value = value
             if len(value) > 80:
                 display_value = value[:77] + "..."
-            
+
             # Color code interesting plugins
             if plugin_name in ["PHP", "Apache", "nginx", "WordPress", "Drupal", "Joomla"]:
                 plugin_display = f"[bold red]{plugin_name}[/bold red]"
@@ -595,13 +595,13 @@ def format_whatweb(parsed: dict) -> None:
                 plugin_display = f"[yellow]{plugin_name}[/yellow]"
             else:
                 plugin_display = f"[cyan]{plugin_name}[/cyan]"
-            
+
             version_display = version if version else "[dim]—[/dim]"
-            
+
             table.add_row(plugin_display, display_value, version_display)
-        
+
         console.print(table)
-    
+
     # Versions summary
     versions = parsed.get("versions", [])
     if versions:
@@ -610,26 +610,26 @@ def format_whatweb(parsed: dict) -> None:
         version_table.add_column("Technology", style="bold cyan")
         version_table.add_column("Version", style="yellow")
         version_table.add_column("Full Value", style="dim")
-        
+
         for v in versions:
             tech = v["tech"]
             version = v["version"]
             full_value = plugins.get(tech, "")[:50]
             version_table.add_row(tech, f"[bold]{version}[/bold]", full_value)
-        
+
         console.print(version_table)
-    
+
     # Emails if found
     emails = parsed.get("emails", [])
     if emails:
         console.print("\n[bold yellow]📧 Emails Found[/bold yellow]")
         for email in emails:
             console.print(f"  [cyan]✉[/cyan] {email}")
-    
+
     # Raw plugin data as expandable? (for debugging)
     if len(plugins) > 0:
         console.print("\n[dim]💡 Tip: Use --verbose to see raw plugin data[/dim]")
-    
+
     console.print()
 
 
@@ -838,7 +838,99 @@ def format_msfvenom(parsed: dict) -> None:
     console.print()
 
 
-# ── Dispatcher ────────────────────────────────────────────────────────────────
+# ── Live Discovery formatter ───────────────────────────────────────────────────
+
+def format_live_discovery(parsed: dict) -> None:
+    """Format live discovery results."""
+    hosts = parsed.get("hosts", [])
+    total = parsed.get("total", 0)
+    network = parsed.get("network", "unknown")
+
+    console.print(f"\n[bold cyan]📡 Live Host Discovery Results[/bold cyan]")
+    console.print(f"   Network: [green]{network}[/green]")
+    console.print(f"   Total hosts: [yellow]{total}[/yellow]\n")
+
+    if not hosts:
+        console.print("[yellow]No hosts found[/yellow]")
+        return
+
+    table = Table(show_header=True, header_style="bold magenta", box=box.SIMPLE_HEAVY)
+    table.add_column("#", style="cyan", width=4)
+    table.add_column("IP", style="green", width=16)
+    table.add_column("MAC", style="dim", width=18)
+    table.add_column("OS", style="yellow", width=20)
+    table.add_column("Vendor", style="white", width=25)
+
+    for i, h in enumerate(hosts, 1):
+        table.add_row(
+            str(i),
+            h.get("ip", "?"),
+            h.get("mac", "?")[:17],
+            f"{h.get('os', 'Unknown')}",
+            h.get("vendor", "?")[:25],
+        )
+
+    console.print(table)
+    console.print()
+
+
+# ── Mail Crawler formatter ────────────────────────────────────────────────────
+
+def format_mail_crawler(parsed: dict) -> None:
+    """Format mail crawler results."""
+    if not parsed.get("success"):
+        console.print("[red]Crawl failed[/red]")
+        return
+
+    emails = parsed.get("emails", [])
+    pages = parsed.get("pages_crawled", 0)
+    target = parsed.get("target", "unknown")
+
+    # Header
+    header = Text()
+    header.append("  Target: ", style="dim")
+    header.append(f"{target}\n", style="cyan")
+    header.append("  Pages crawled: ", style="dim")
+    header.append(f"{pages}\n", style="bold cyan")
+    header.append("  Emails found: ", style="dim")
+    header.append(f"{len(emails)}", style="bold green")
+
+    console.print(Panel(header, title="[bold cyan]📧 Email Harvesting Results[/bold cyan]",
+                        border_style="cyan", box=box.ROUNDED))
+
+    if emails:
+        # Create a nice table
+        table = Table(show_header=True, header_style="bold magenta",
+                      box=box.SIMPLE_HEAVY, border_style="dim")
+        table.add_column("#", width=4, style="dim")
+        table.add_column("Email", style="bold green")
+        table.add_column("Domain", style="dim")
+
+        for i, email in enumerate(emails[:100], 1):
+            domain = email.split('@')[-1] if '@' in email else ""
+            table.add_row(str(i), email, domain)
+
+        console.print(table)
+
+        if len(emails) > 100:
+            console.print(f"[dim]... and {len(emails)-100} more emails[/dim]")
+
+        # Summary panel
+        console.print(Panel(
+            f"[bold green]Total: {len(emails)} unique emails[/bold green]\n"
+            f"[dim]Use these for OSINT, phishing tests, or recon[/dim]",
+            title="📊 Summary",
+            border_style="green",
+            box=box.ROUNDED
+        ))
+    else:
+        console.print("[yellow]No emails found[/yellow]")
+
+    console.print()
+
+
+# ── Dispatcher (FORMATTERS dictionary) ────────────────────────────────────────
+# Define this AFTER all formatter functions are defined
 
 FORMATTERS = {
     "nmap": format_nmap,
@@ -859,65 +951,10 @@ FORMATTERS = {
     "dnsrecon": format_dnsrecon,
     "nuclei": format_nuclei,
     "msfvenom": format_msfvenom,
+    "live_discovery": format_live_discovery,
+    "mail_crawler": format_mail_crawler,
 }
 
-def format_mail_crawler(parsed: dict) -> None:
-    """Format mail crawler results."""
-    if not parsed.get("success"):
-        console.print("[red]Crawl failed[/red]")
-        return
-    
-    emails = parsed.get("emails", [])
-    pages = parsed.get("pages_crawled", 0)
-    target = parsed.get("target", "unknown")
-    
-    # Header
-    header = Text()
-    header.append("  Target: ", style="dim")
-    header.append(f"{target}\n", style="cyan")
-    header.append("  Pages crawled: ", style="dim")
-    header.append(f"{pages}\n", style="bold cyan")
-    header.append("  Emails found: ", style="dim")
-    header.append(f"{len(emails)}", style="bold green")
-    
-    console.print(Panel(header, title="[bold cyan]📧 Email Harvesting Results[/bold cyan]",
-                        border_style="cyan", box=box.ROUNDED))
-    
-    if emails:
-        # Create a nice table
-        table = Table(show_header=True, header_style="bold magenta",
-                      box=box.SIMPLE_HEAVY, border_style="dim")
-        table.add_column("#", width=4, style="dim")
-        table.add_column("Email", style="bold green")
-        table.add_column("Domain", style="dim")
-        
-        for i, email in enumerate(emails[:100], 1):
-            domain = email.split('@')[-1] if '@' in email else ""
-            table.add_row(str(i), email, domain)
-        
-        console.print(table)
-        
-        if len(emails) > 100:
-            console.print(f"[dim]... and {len(emails)-100} more emails[/dim]")
-        
-        # Summary panel
-        console.print(Panel(
-            f"[bold green]Total: {len(emails)} unique emails[/bold green]\n"
-            f"[dim]Use these for OSINT, phishing tests, or recon[/dim]",
-            title="📊 Summary",
-            border_style="green",
-            box=box.ROUNDED
-        ))
-    else:
-        console.print("[yellow]No emails found[/yellow]")
-    
-    console.print()
-
-# Add to FORMATTERS
-FORMATTERS.update({
-    # ... existing ...
-    "mail_crawler": format_mail_crawler,
-})
 
 def format_results(tool_name: str, parsed: dict) -> None:
     """Dispatch to the correct formatter for *tool_name*."""

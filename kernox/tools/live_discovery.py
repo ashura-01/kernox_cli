@@ -1,37 +1,56 @@
 """
-kernox.tools.live_discovery - Network host discovery using Scapy.
+kernox.tools.live_discovery - Smart network host discovery with AI integration.
 """
 
 from __future__ import annotations
 
 import ipaddress
+import os
+import re
 import socket
+import subprocess as sp
+import sys
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
+from rich.prompt import Confirm
 from rich import box
 
 console = Console()
 
 # Try to import Scapy
 try:
-    from scapy.all import ARP, Ether, srp, IP, ICMP, sr1
+    from scapy.all import ARP, Ether, srp, IP, ICMP, sr1, conf as scapy_conf
     SCAPY_AVAILABLE = True
 except ImportError:
     SCAPY_AVAILABLE = False
 
 
 class LiveDiscoveryTool:
-    """Discover live hosts on network using ARP scan + optional ICMP."""
+    """
+    Smart live host discovery with:
+    - Automatic sudo handling
+    - Multiple discovery methods (ARP, ping sweep, arp-scan)
+    - AI integration for OS detection and prioritization
+    - MAC vendor lookup
+    """
 
     name = "live_discovery"
-    description = "Discover live hosts on local network (ARP scan)"
+    description = "Discover live hosts with IP, MAC, OS, and vendor info"
 
     def __init__(self, ai_client=None, session_state=None):
         self._ai = ai_client
         self._state = session_state
+        self._is_root = os.geteuid() == 0
+
+    def build_command(self, **_) -> str:
+        return ""
+
+    def parse(self, output: str) -> Dict:
+        return {"raw": output}
 
     def run_direct(
         self,
@@ -39,66 +58,72 @@ class LiveDiscoveryTool:
         timeout: float = 2.0,
         vendor_lookup: bool = True,
         icmp_fallback: bool = True,
-        silent: bool = True,
+        silent: bool = False,
+        iface: str = None,
         **kwargs,
     ) -> Dict:
         """
-        Discover live hosts on network.
-
-        Args:
-            target: CIDR network (e.g., 192.168.1.0/24) or None for auto-detect
-            timeout: ARP and ICMP timeout in seconds
-            vendor_lookup: Query macvendors.com API for vendor names
-            icmp_fallback: Also try ICMP ping for cross-subnet discovery
-            silent: Suppress all terminal output
+        Discover live hosts on network with smart fallbacks.
         """
-        if not SCAPY_AVAILABLE:
-            return self._fallback_no_scapy(target, silent)
-
-        # Get network range
+        # Auto-detect network if needed
         if not target or target.lower() == "auto":
-            target = self._detect_local_range()
+            target = self._auto_detect_network(iface)
             if not silent:
                 console.print(f"[cyan]Auto-detected network: {target}[/cyan]")
+        #
+        # if not silent:
+        #     console.print(f"[cyan]Scanning {target}...[/cyan]")
 
-        if not silent:
-            console.print(f"[cyan]Scanning {target}...[/cyan]")
+        devices = []
 
-        # Step 1: ARP scan (primary - finds everything on local subnet)
-        devices = self._arp_scan(target, timeout)
+        # Try methods in order of reliability
+        # Method 1: ARP with Scapy (best, needs root)
+        if self._is_root and SCAPY_AVAILABLE:
+            devices = self._arp_scan_scapy(target, timeout, iface)
+            if devices:
+                if not silent:
+                    console.print(f"[green]✓ ARP scan found {len(devices)} hosts[/green]")
 
-        # Step 2: ICMP fallback (for cross-subnet or if ARP found nothing)
+        # Method 2: arp-scan binary (good fallback)
+        if not devices:
+            devices = self._arp_scan_binary(target, timeout, iface)
+            if devices and not silent:
+                console.print(f"[green]✓ arp-scan found {len(devices)} hosts[/green]")
+
+        # Method 3: ICMP ping sweep (last resort)
         if icmp_fallback and not devices:
             if not silent:
-                console.print("[dim]ARP found nothing, trying ICMP sweep...[/dim]")
-            devices = self._icmp_sweep(target, timeout)
+                console.print("[dim]Trying ICMP ping sweep...[/dim]")
+            devices = self._ping_sweep(target, timeout)
+            if devices and not silent:
+                console.print(f"[green]✓ ICMP sweep found {len(devices)} hosts[/green]")
 
         if not devices:
             if not silent:
                 console.print("[yellow]No live hosts found.[/yellow]")
+                if not self._is_root:
+                    console.print("[dim]Tip: Run with 'sudo' for better ARP discovery[/dim]")
             return {"hosts": [], "total": 0, "network": target}
 
-        # Step 3: Enrich each device (TTL, OS, vendor)
+        # Enrich each device with OS, vendor, hostname
         if not silent:
             console.print(f"[dim]Enriching {len(devices)} host(s)...[/dim]")
 
         for device in devices:
             self._enrich_device(device, timeout, vendor_lookup)
 
-        # Step 4: Filter out gateway and broadcast
+        # Filter and sort
         devices = self._filter_hosts(devices, target)
-
-        # Step 5: Sort by IP
         devices.sort(key=lambda d: ipaddress.ip_address(d["ip"]))
 
-        # Step 6: Display results (if not silent)
+        # Display results
         if not silent:
             self._print_results(devices, target)
 
-        # Step 7: AI analysis (only IPs)
+        # AI analysis - gets IPs and OS info
         ai_response = None
         if self._ai and devices:
-            ai_response = self._ai_analyze([d["ip"] for d in devices], target)
+            ai_response = self._ai_analyze(devices, target)
 
         return {
             "hosts": devices,
@@ -107,140 +132,218 @@ class LiveDiscoveryTool:
             "ai_suggestion": ai_response,
         }
 
-    # ── Core scanning ─────────────────────────────────────────────────────────
+    # ── Discovery Methods ─────────────────────────────────────────────────────
 
-    def _arp_scan(self, ip_range: str, timeout: float) -> List[Dict]:
-        """ARP scan using Scapy."""
-        try:
-            ipaddress.ip_network(ip_range, strict=False)
-        except ValueError:
+    def _arp_scan_scapy(self, ip_range: str, timeout: float, iface: str = None) -> List[Dict]:
+        """ARP scan using Scapy (requires root)."""
+        if not SCAPY_AVAILABLE:
             return []
 
-        # Create ARP request packet
-        arp_req = ARP(pdst=ip_range)
-        ether = Ether(dst="ff:ff:ff:ff:ff:ff")
-        packet = ether / arp_req
-
-        # Send and receive
         try:
-            answered, _ = srp(packet, timeout=timeout, verbose=0)
+            arp = ARP(pdst=ip_range)
+            ether = Ether(dst="ff:ff:ff:ff:ff:ff")
+            packet = ether / arp
+
+            kwargs = {"timeout": timeout, "verbose": 0}
+            if iface:
+                kwargs["iface"] = iface
+
+            answered, _ = srp(packet, **kwargs)
+
+            devices = []
+            for _, rcv in answered:
+                devices.append({
+                    "ip": rcv.psrc,
+                    "mac": rcv.hwsrc.upper(),
+                    "method": "arp-scapy",
+                })
+            return devices
+        except PermissionError:
+            return []
         except Exception:
             return []
 
-        devices = []
-        for _, rcv in answered:
-            devices.append({
-                "ip": rcv.psrc,
-                "mac": rcv.hwsrc.upper(),
-                "method": "arp",
-            })
-        return devices
+    def _arp_scan_binary(self, ip_range: str, timeout: float, iface: str = None) -> List[Dict]:
+        """ARP scan using arp-scan binary (works without root if setuid)."""
+        cmd = ["arp-scan", ip_range, "--timeout", str(int(timeout))]
+        if iface:
+            cmd.extend(["--interface", iface])
 
-    def _icmp_sweep(self, ip_range: str, timeout: float) -> List[Dict]:
-        """ICMP ping sweep using Scapy."""
+        try:
+            # Try without sudo first
+            result = sp.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
+            if result.returncode != 0 and "permission" in result.stderr.lower():
+                # Need sudo - ask once
+                if Confirm.ask("[yellow]ARP scan needs sudo. Run with sudo?[/yellow]", default=True):
+                    result = sp.run(["sudo"] + cmd, capture_output=True, text=True, timeout=timeout + 5)
+                else:
+                    return []
+
+            devices = []
+            for line in result.stdout.split("\n"):
+                parts = line.strip().split("\t")
+                if len(parts) >= 2 and re.match(r"\d+\.\d+\.\d+\.\d+", parts[0]):
+                    devices.append({
+                        "ip": parts[0],
+                        "mac": parts[1].upper() if len(parts) > 1 else "",
+                        "vendor": parts[2] if len(parts) > 2 else "",
+                        "method": "arp-scan",
+                    })
+            return devices
+        except FileNotFoundError:
+            return []
+        except Exception:
+            return []
+
+    def _ping_sweep(self, ip_range: str, timeout: float) -> List[Dict]:
+        """ICMP ping sweep using system ping (setuid root, works without sudo)."""
+        devices = []
         try:
             net = ipaddress.ip_network(ip_range, strict=False)
             ips = [str(ip) for ip in net.hosts()][:254]
-        except Exception:
-            return []
 
-        devices = []
-        for ip in ips:
-            try:
-                pkt = IP(dst=ip) / ICMP()
-                reply = sr1(pkt, timeout=timeout, verbose=0)
-                if reply:
-                    devices.append({
-                        "ip": ip,
-                        "mac": "",
-                        "method": "icmp",
-                    })
-            except Exception:
-                continue
+            for ip in ips:
+                try:
+                    result = sp.run(
+                        ["ping", "-c", "1", "-W", "1", ip],
+                        capture_output=True,
+                        timeout=int(timeout) + 1
+                    )
+                    if result.returncode == 0:
+                        devices.append({
+                            "ip": ip,
+                            "mac": "",
+                            "method": "ping",
+                        })
+                except Exception:
+                    continue
+        except Exception:
+            pass
         return devices
 
-    # ── Enrichment ────────────────────────────────────────────────────────────
+    # ── Enrichment Methods ────────────────────────────────────────────────────
 
     def _get_ttl(self, ip: str, timeout: float) -> Optional[int]:
-        """Get TTL from ICMP response."""
+        """Get TTL from ICMP response using system ping (reliable)."""
         try:
-            pkt = IP(dst=ip) / ICMP()
-            reply = sr1(pkt, timeout=timeout, verbose=0)
-            if reply:
-                return reply.ttl
+            result = sp.run(
+                ["ping", "-c", "1", "-W", "1", ip],
+                capture_output=True,
+                text=True,
+                timeout=int(timeout) + 1
+            )
+            # Parse TTL from output: "ttl=64"
+            match = re.search(r"ttl=(\d+)", result.stdout.lower())
+            if match:
+                return int(match.group(1))
         except Exception:
             pass
         return None
 
-    def _guess_os_from_ttl(self, ttl: Optional[int]) -> str:
-        """Fingerprint OS from TTL value."""
+    def _guess_os_from_ttl(self, ttl: Optional[int]) -> Tuple[str, int]:
+        """Fingerprint OS from TTL value with confidence."""
         if ttl is None:
-            return "Unknown"
+            return "Unknown", 0
         if ttl <= 64:
-            return "Linux/Unix/macOS"
+            return "Linux/Unix/macOS", 80
         if ttl <= 128:
-            return "Windows"
+            return "Windows", 80
         if ttl <= 255:
-            return "Network Device"
-        return "Unknown"
+            return "Network Device", 60
+        return "Unknown", 30
 
     def _get_vendor(self, mac: str) -> str:
-        """Look up vendor from macvendors.com API."""
-        if not mac or mac == "":
-            return "N/A"
+        """Look up vendor from MAC OUI."""
+        if not mac or len(mac) < 8:
+            return ""
+
+        oui = mac[:8].upper()
+        # Simple OUI database (common vendors)
+        oui_db = {
+            "00:00:0C": "Cisco", "00:14:22": "Dell", "00:1A:A0": "HP",
+            "00:1E:C2": "Apple", "00:25:9C": "Samsung", "00:50:56": "VMware",
+            "08:00:27": "VirtualBox", "B8:27:EB": "Raspberry Pi", "00:15:5D": "Hyper-V",
+            "00:0C:29": "VMware", "00:50:F2": "Microsoft", "00:1B:21": "Sony",
+            "00:1A:11": "Google", "00:1E:8F": "Intel", "00:22:68": "Dell",
+            "00:23:DF": "Apple", "00:24:36": "IBM", "00:26:2D": "Acer",
+        }
+        for prefix, vendor in oui_db.items():
+            if mac.startswith(prefix):
+                return vendor
+
+        # Try online API as fallback
         try:
             import requests
             url = f"https://api.macvendors.com/{mac}"
             r = requests.get(url, timeout=3)
             if r.status_code == 200:
-                return r.text.strip()
-            if r.status_code == 404:
-                return "Unknown vendor"
-        except ImportError:
-            return "requests not installed"
+                return r.text.strip()[:30]
         except Exception:
             pass
-        return "Lookup failed"
+        return ""
 
     def _enrich_device(self, device: Dict, timeout: float, vendor_lookup: bool) -> None:
-        """Add TTL, OS, and vendor to device dict."""
+        """Add TTL, OS, vendor, and hostname to device."""
         ip = device["ip"]
-        mac = device.get("mac", "")
 
-        # Get TTL and guess OS
+        # Get TTL and OS
         ttl = self._get_ttl(ip, timeout)
-        os_guess = self._guess_os_from_ttl(ttl)
-
         device["ttl"] = ttl
-        device["os"] = os_guess
+        os_name, confidence = self._guess_os_from_ttl(ttl)
+        device["os"] = os_name
+        device["os_confidence"] = confidence
 
-        # Vendor lookup (with rate limiting for API)
-        if vendor_lookup and mac:
-            device["vendor"] = self._get_vendor(mac)
-            time.sleep(0.5)  # Be polite to free API (1 req/sec)
+        # Get hostname
+        try:
+            hostname = socket.gethostbyaddr(ip)[0]
+            device["hostname"] = hostname
+        except Exception:
+            device["hostname"] = ""
+
+        # Get vendor from MAC
+        if vendor_lookup and device.get("mac"):
+            device["vendor"] = self._get_vendor(device["mac"])
         else:
-            device["vendor"] = "Disabled"
+            device["vendor"] = ""
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _detect_local_range(self) -> str:
-        """Auto-detect local subnet."""
+    def _auto_detect_network(self, iface: str = None) -> str:
+        """Auto-detect local network range."""
+        # Try to get from interface
+        if iface:
+            try:
+                result = sp.run(["ip", "-4", "addr", "show", iface], capture_output=True, text=True)
+                match = re.search(r"inet (\d+\.\d+\.\d+\.\d+)/(\d+)", result.stdout)
+                if match:
+                    ip = match.group(1)
+                    cidr = match.group(2)
+                    parts = ip.split(".")
+                    return f"{parts[0]}.{parts[1]}.{parts[2]}.0/{cidr}"
+            except Exception:
+                pass
+
+        # Get default route interface
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            local_ip = s.getsockname()[0]
-            s.close()
-            parts = local_ip.rsplit(".", 1)
-            return f"{parts[0]}.0/24"
+            result = sp.run(["ip", "route", "show", "default"], capture_output=True, text=True)
+            match = re.search(r"dev\s+(\S+)", result.stdout)
+            if match:
+                iface_name = match.group(1)
+                addr = sp.run(["ip", "-4", "addr", "show", iface_name], capture_output=True, text=True)
+                ip_match = re.search(r"inet (\d+\.\d+\.\d+\.\d+)/(\d+)", addr.stdout)
+                if ip_match:
+                    ip = ip_match.group(1)
+                    parts = ip.split(".")
+                    return f"{parts[0]}.{parts[1]}.{parts[2]}.0/24"
         except Exception:
-            return "192.168.1.0/24"
+            pass
+
+        return "192.168.1.0/24"
 
     def _get_gateway(self) -> Optional[str]:
         """Get default gateway IP."""
         try:
-            import subprocess as sp
             r = sp.run(["ip", "route", "show", "default"], capture_output=True, text=True)
-            import re
             m = re.search(r"via\s+(\d+\.\d+\.\d+\.\d+)", r.stdout)
             return m.group(1) if m else None
         except Exception:
@@ -276,59 +379,81 @@ class LiveDiscoveryTool:
         table.add_column("#", style="cyan", width=4)
         table.add_column("IP", style="green", width=16)
         table.add_column("MAC", style="dim", width=18)
-        table.add_column("OS (TTL)", style="yellow", width=20)
-        table.add_column("Vendor", style="white", width=25)
+        table.add_column("OS", style="yellow", width=20)
+        table.add_column("Vendor", style="white", width=20)
+        table.add_column("Hostname", style="blue", width=20)
 
         for i, d in enumerate(devices, 1):
             table.add_row(
                 str(i),
                 d["ip"],
                 d.get("mac", "?")[:17],
-                f"{d.get('os', '?')} ({d.get('ttl', '?')})",
-                d.get("vendor", "?")[:25],
+                f"{d.get('os', '?')} ({d.get('os_confidence', 0)}%)",
+                d.get("vendor", "?")[:20],
+                d.get("hostname", "?")[:20],
             )
 
         console.print(table)
         console.print(f"\n[green]✓ Found {len(devices)} live host(s)[/green]")
 
-    def _ai_analyze(self, ips: List[str], network: str) -> Optional[str]:
-        """Single AI call - only gets IPs."""
-        if not self._ai or not ips:
+    def _ai_analyze(self, devices: List[Dict], network: str) -> Optional[str]:
+        """
+        AI analysis with full device info (IP + OS).
+        This gives AI both IP and OS for better prioritization.
+        """
+        if not self._ai or not devices:
             return None
 
-        ip_str = ", ".join(ips[:15])
-        if len(ips) > 15:
-            ip_str += f" (+{len(ips)-15} more)"
+        # Build compact device list for AI
+        device_lines = []
+        for d in devices[:12]:
+            line = f"IP={d['ip']} OS={d.get('os', 'Unknown')}"
+            if d.get('open_ports'):
+                line += f" ports={d['open_ports']}"
+            device_lines.append(line)
 
-        prompt = f"Network: {network}\nIPs: {ip_str}\nWhich IPs to prioritize for scanning?"
+        device_str = "\n".join(device_lines)
+        if len(devices) > 12:
+            device_str += f"\n... +{len(devices) - 12} more"
+
+        prompt = f"""Network: {network}
+Total hosts: {len(devices)}
+
+Devices:
+{device_str}
+
+Which IPs to prioritize for scanning? Consider OS types and potential vulnerabilities.
+Return ONLY: IPs and brief reason (2-3 sentences max)."""
 
         try:
-            response = self._ai.chat(
-                messages=[{"role": "user", "content": prompt}],
-                system="Brief. Return only IPs and one sentence why.",
-                max_tokens=100,
-            )
+            if hasattr(self._ai, "chat"):
+                response = self._ai.chat(
+                    messages=[{"role": "user", "content": prompt}],
+                    system="Penetration tester. Prioritize targets. Be brief.",
+                    max_tokens=200,
+                )
+            elif callable(self._ai):
+                response = self._ai(prompt)
+            else:
+                return None
+
             if response:
                 console.print(Panel(
-                    response,
-                    title="[cyan]AI — Priority Targets[/cyan]",
+                    str(response),
+                    title="[cyan]AI — Priority Targets & Strategy[/cyan]",
                     border_style="cyan",
                     box=box.SIMPLE,
                 ))
-            return response
-        except Exception:
+            return str(response) if response else None
+        except Exception as e:
+            console.print(f"[dim]AI analysis skipped: {e}[/dim]")
             return None
 
-    def _fallback_no_scapy(self, target: str, silent: bool) -> Dict:
-        """Fallback when Scapy is not installed."""
-        if not silent:
-            console.print("[red]Scapy not installed. Run: pip install scapy[/red]")
-        return {"hosts": [], "total": 0, "network": target or "unknown", "error": "scapy missing"}
 
-
+# Standalone test
 if __name__ == "__main__":
     tool = LiveDiscoveryTool()
     result = tool.run_direct(silent=False)
     print(f"\nFound: {result['total']} hosts")
-    if result.get('ai_suggestion'):
-        print(f"\nAI: {result['ai_suggestion']}")
+    for h in result['hosts']:
+        print(f"  {h['ip']} - {h.get('os', '?')} - {h.get('vendor', '')}")

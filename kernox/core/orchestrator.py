@@ -920,7 +920,8 @@ Rules:
             console.print(f"[bold magenta]\n── {tool_name.upper()} ──[/bold magenta]")
             result = tool.run_direct(**args)
             parsed = result
-            format_results(tool_name, parsed)
+            if tool_name != "live_discovery":
+                format_results(tool_name, parsed)
             self._state.add_tool_result(tool=tool_name, target=args.get("target", ""), parsed=parsed)
             return parsed, None
 
