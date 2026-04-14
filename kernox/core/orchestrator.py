@@ -142,7 +142,7 @@ live_discovery:
   Finds all devices via ARP scan, adds MAC vendor lookup and TTL-based OS fingerprinting.
   Examples:
     - "discover network" → Auto-detects local subnet
-    - "discover 192.168.1.0/24" → Scans that range
+    - "discover 192.168.0.0/24" → Scans that range
 
 sqlmap:
   args: target (URL with param), flags
