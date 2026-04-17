@@ -1,0 +1,58 @@
+kernox/
+├── kernox/                     # Python package (hidden from user)
+│   ├── __init__.py
+│
+│   ├── cli.py                  # CLI entry point (kernox command)
+│
+│   ├── core/                   # Core framework logic
+│   │   ├── __init__.py
+│   │   ├── first_run.py         # Detect first execution
+│   │   ├── first_run_setup.py   # Interactive first-time setup
+│   │   ├── config_menu.py       # kernox --config menu
+│   │   ├── executor.py          # Safe tool execution wrapper
+│   │   └── orchestrator.py      # AI → tool decision flow
+│
+│   ├── ai/                     # AI brains
+│   │   ├── __init__.py
+│   │   ├── base.py              # AI interface (contract)
+│   │   ├── ollama.py            # Local AI client
+│   │   ├── api.py               # API AI client
+│   │   └── factory.py           # Select AI from config
+│
+│   ├── tools/                  # Tool wrappers (NO parsing here)
+│   │   ├── __init__.py
+│   │   ├── nmap.py
+│   │   ├── ffuf.py
+│   │   ├── gobuster.py
+│   │   └── sqlmap.py
+│
+│   ├── parsers/                # Output parsing only
+│   │   ├── __init__.py
+│   │   ├── nmap_parser.py
+│   │   ├── ffuf_parser.py
+│   │   └── sqlmap_parser.py
+│
+│   ├── engine/                 # State & logic
+│   │   ├── __init__.py
+│   │   ├── state.py             # Session state (what we know)
+│   │   └── state_updater.py     # Apply parsed results to state
+│
+│   ├── guards/                 # Safety & rules
+│   │   ├── __init__.py
+│   │   └── rules.py             # Allowed actions / limits
+│
+│   ├── security/               # Secrets handling
+│   │   ├── __init__.py
+│   │   └── key_store.py         # Encrypted API keys (SQLite)
+│
+│   ├── config/                 # Persistent config
+│   │   ├── __init__.py
+│   │   └── config_store.py      # SQLite config DB
+│
+│   └── utils/                  # Small helpers
+│       ├── __init__.py
+│       └── secure_input.py      # getpass, safe prompts
+│
+├── pyproject.toml               # Build system & metadata
+├── setup.py                     # Console entry point
+└── README.md                    # Usage & philosophy

@@ -9,8 +9,22 @@ description = "AI-Powered Security Automation CLI for ethical hackers"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "Kernox Contributors" }]
-keywords = ["security", "pentest", "ai", "automation", "cli", "nmap", "ffuf", "sqlmap"]
+
+authors = [
+    { name = "Kernox Contributors" }
+]
+
+keywords = [
+    "security",
+    "pentest",
+    "ai",
+    "automation",
+    "cli",
+    "nmap",
+    "ffuf",
+    "sqlmap"
+]
+
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -19,7 +33,7 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.12"
 ]
 
 dependencies = [
@@ -30,8 +44,7 @@ dependencies = [
     "anthropic>=0.25.0",
     "ollama>=0.2.0",
     "reportlab>=4.0.0",
-    "beautifulsoup4>=4.12.0"
-    "requests>=2.31.0"
+    "beautifulsoup4>=4.12.0",
     "lxml>=4.9.0"
 ]
 
