@@ -486,34 +486,76 @@ Be specific to the actual targets and findings above. All commands must be copy-
 
         prompt = f"""You are a senior penetration tester. A tool just finished on an authorized test.
 
-Tool: {tool_name.upper()}
-Target: {target}
-Results:
-{summary}
+    Tool: {tool_name.upper()}
+    Target: {target}
+    Results:
+    {summary}
 
-Provide a SHORT but PRECISE response with:
-1. The most important finding (1 sentence)
-2. The EXACT next command to run — full command with all flags, not a description
+    Provide a SHORT but PRECISE response with:
+    1. The most important finding (1 sentence)
+    2. The EXACT next command to run — full command with all flags, not a description
 
-Format:
-**Finding:** <what matters>
-**Next:** ```bash
-<exact command here>
-```
+    Format:
+    **Finding:** <what matters>
+    **Next:** <command>
 
-Rules:
-- Command must be copy-paste ready with real flags, not placeholders
-- Use the actual target: {target}
-- If nothing significant found, just say "Clean — no critical findings."
-- Max 6 lines total. No disclaimers."""
+    Rules:
+    - Command must be copy-paste ready with real flags, not placeholders
+    - Use the actual target: {target}
+    - If nothing significant found, just say "Clean — no critical findings."
+    - Max 6 lines total. No disclaimers.
+    - Use plain text without markdown code blocks."""
+
         try:
             with Live(Spinner("dots", text="[dim]AI analysing results...[/dim]"), refresh_per_second=10):
                 response = self._ai.chat(
                     messages=[{"role": "user", "content": prompt}],
-                    system="You are a senior penetration tester. Give exact commands, not suggestions.",
+                    system="You are a senior penetration tester. Give exact commands in plain text. Do not use markdown code blocks or backticks. Just plain text.",
                     max_tokens=250,
                 )
             if response and not response.startswith("Error:"):
+                # Sanitize the response to fix any malformed markdown
+                import re
+
+                # Fix unclosed code blocks - if there's a opening ``` but no closing, remove it
+                lines = response.split('\n')
+                sanitized_lines = []
+                in_code_block = False
+
+                for line in lines:
+                    if '```' in line:
+                        # Count backticks in this line
+                        if line.strip().startswith('```'):
+                            if not in_code_block:
+                                # Opening code block - skip it
+                                in_code_block = True
+                                continue
+                            else:
+                                # Closing code block - skip it
+                                in_code_block = False
+                                continue
+                        else:
+                            # Remove inline backticks
+                            line = re.sub(r'`([^`]+)`', r'\1', line)
+
+                    if not in_code_block:
+                        # Also remove any language specifiers like "bash" on their own line
+                        if line.strip() in ['bash', 'python', 'sql', 'json', '```bash', '```python']:
+                            continue
+                        sanitized_lines.append(line)
+
+                response = '\n'.join(sanitized_lines).strip()
+
+                # Additional cleanup: remove any remaining backticks
+                response = re.sub(r'`', '', response)
+
+                # If the response still has "bash" at the start of a line, remove it
+                response = re.sub(r'^bash\s*\n', '', response, flags=re.MULTILINE)
+
+                # Ensure proper formatting for "Next:" command - add newline if missing
+                if '**Next:**' in response and not response.split('**Next:**')[1].strip().startswith('\n'):
+                    response = response.replace('**Next:**', '**Next:**\n')
+
                 console.print(Panel(
                     Markdown(response),
                     title=f"[bold cyan]AI — {tool_name.upper()}[/bold cyan]",
@@ -1271,7 +1313,7 @@ Provide a clear, professional explanation in JSON format:
 
             # CLEAN response - remove any markdown code blocks
             response = response.strip()
-            
+
             # Remove opening ``` and language specifiers
             if response.startswith("```"):
                 lines = response.split("\n")
@@ -1280,13 +1322,13 @@ Provide a clear, professional explanation in JSON format:
                 if lines and lines[-1].strip() == "```":
                     lines.pop()   # Remove closing ```
                 response = "\n".join(lines).strip()
-                
+
                 # Remove "json" or "bash" if present after cleaning
                 if response.startswith("json"):
                     response = response[4:].strip()
                 elif response.startswith("bash"):
                     response = response[4:].strip()
-            
+
             # Also handle case where response starts with ``` on same line
             if response.startswith("```json"):
                 response = response[7:].strip()
@@ -1296,7 +1338,7 @@ Provide a clear, professional explanation in JSON format:
                 response = response[7:].strip()
                 if response.endswith("```"):
                     response = response[:-3].strip()
-            
+
             import re as _re
             # Try to find JSON array - be more flexible
             arr_match = _re.search(r'\[.*\]', response, _re.DOTALL)
@@ -1307,10 +1349,10 @@ Provide a clear, professional explanation in JSON format:
                 if not arr_match:
                     console.print(f"[dim yellow]No JSON array found in AI response: {response[:200]}[/dim yellow]")
                     return []
-            
+
             raw_json = arr_match.group()
             suggestions = json.loads(raw_json)
-            
+
             if not isinstance(suggestions, list):
                 return []
 
@@ -1320,11 +1362,11 @@ Provide a clear, professional explanation in JSON format:
                     args_dict = s.get("args", {"target": target})
                     if not isinstance(args_dict, dict):
                         args_dict = {"target": target}
-                    
+
                     # Ensure target is set if missing
                     if "target" not in args_dict or not args_dict["target"]:
                         args_dict["target"] = target
-                    
+
                     valid.append({
                         "tool": s["tool"],
                         "args": args_dict,
@@ -1332,7 +1374,7 @@ Provide a clear, professional explanation in JSON format:
                         "priority": s.get("priority", 2),
                     })
             return valid
-            
+
         except json.JSONDecodeError as e:
             console.print(f"[dim red]JSON decode failed: {e}[/dim red]")
             console.print(f"[dim red]Raw response: {response[:300]}[/dim red]")
@@ -1403,11 +1445,11 @@ Provide a clear, professional explanation in JSON format:
     #                 args_dict = s.get("args", {"target": target})
     #                 if not isinstance(args_dict, dict):
     #                     args_dict = {"target": target}
-                    
+
     #                 # Ensure target is set if missing
     #                 if "target" not in args_dict or not args_dict["target"]:
     #                     args_dict["target"] = target
-                    
+
     #                 valid.append({
     #                     "tool": s["tool"],
     #                     "args": args_dict,
@@ -1418,7 +1460,7 @@ Provide a clear, professional explanation in JSON format:
     #     except Exception as e:
     #         console.print(f"[dim red]Chain suggestion failed: {e}[/dim red]")
     #         return []
- 
+
 
     def _fallback_chain(self, tool_name: str, parsed: dict, args: dict) -> list[dict]:
         """Deterministic fallback chain rules."""
