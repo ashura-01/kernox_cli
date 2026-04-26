@@ -963,10 +963,6 @@ def format_results(tool_name: str, parsed: dict) -> None:
     if tool_name == "recon":
         return
 
-    if tool_name == "privesc":
-        from kernox.utils.privesc_formatter import format_privesc
-        format_privesc(parsed)
-        return
     formatter = FORMATTERS.get(tool_name)
     if formatter:
         formatter(parsed)
