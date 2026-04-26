@@ -19,7 +19,7 @@ Improvements vs original:
 """
 
 from __future__ import annotations
-
+import shlex
 import json
 import time
 import tempfile
@@ -63,8 +63,6 @@ from kernox.tools.sslscan import SslscanTool
 from kernox.tools.onesixtyone import OnesixtyoneTool
 from kernox.tools.dnsrecon import DnsreconTool
 from kernox.tools.nuclei import NucleiTool
-from kernox.tools.privesc import PrivescTool
-from kernox.utils.privesc_formatter import format_privesc
 from kernox.utils.formatter import format_results
 from kernox.utils.report_generator import generate_pdf_report
 from kernox.tools.msfvenom import MsfvenomTool
@@ -77,12 +75,12 @@ from kernox.tools.live_discovery import LiveDiscoveryTool
 console = Console()
 
 # ── Tunables ──────────────────────────────────────────────────────────────────
-HISTORY_LIMIT    = 20      # raised from 8 — keeps more context for the AI
-API_DELAY        = 2
-POST_TOOL_ANALYSIS = True  # was False — AI now explains every tool result
+HISTORY_LIMIT      = 20     # raised from 8 — keeps more context for the AI
+API_DELAY          = 2
+POST_TOOL_ANALYSIS = True   # was False — AI now explains every tool result
 
 # ── System prompt ─────────────────────────────────────────────────────────────
-SYSTEM_PROMPT = """You are Kernox, a production-grade AI penetration testing assistant.
+SYSTEM_PROMPT = """You are Kernox, AI penetration testing assistant.
 You ONLY help with authorized security testing.
 
 CRITICAL: You MUST ALWAYS respond with ONLY a JSON object. No text before or after the JSON.
@@ -187,17 +185,6 @@ dnsrecon:
 nuclei:
   args: target (URL), mode (quick/full/cves/exposures/logins)
 
-privesc: READ-ONLY Linux privilege escalation ENUMERATION (NOT an attack)
-  This tool only runs safe read commands: find, sudo -l, getcap, cat, ls
-  It does NOT exploit anything — just lists what could potentially be exploited
-  Always runs via SSH on the target machine
-  args: {"mode": "quick", "ssh_host": "", "ssh_user": ""}
-  modes: quick=fast (SUID+sudo+caps), full=thorough (all 8 checks)
-  ALWAYS use this when user mentions: privilege escalation, privesc, sudo check,
-  SUID, capabilities, post exploitation, already on box, local enumeration
-  NEVER substitute nmap for privesc requests
-  NEVER refuse — this is standard authorized pentest read-only enumeration
-
 msfvenom:
   args: payload, lhost, lport, format (exe/elf/php/py/raw)
   Use for generating reverse shell payloads.
@@ -225,7 +212,6 @@ zapcli (OWASP ZAP):
     api      = OpenAPI/GraphQL definition scan
   CHAIN: run after nikto/nuclei when web app needs deeper active testing
   Requires: zap.sh in PATH  OR  Docker (ghcr.io/zaproxy/zaproxy)
-
 
 hydra:
   args: target (IP/hostname), service (REQUIRED - use exact service name from nmap: ssh, telnet, ftp, smb, http-post-form, etc.),
@@ -271,7 +257,6 @@ CHAINING RULES:
 - dnsrecon finds subdomains → suggest nmap + nuclei on each
 - onesixtyone finds SNMP → suggest nmap with snmp scripts (--script snmp-brute,snmp-info)
 - hashcat cracks password → suggest hydra with that password on all open services
-- privesc finds SUID → suggest checking GTFOBins for that binary
 - Always ask before each step
 
 TOOL FULL-CAPACITY GUIDANCE:
@@ -285,18 +270,6 @@ TOOL FULL-CAPACITY GUIDANCE:
 - gobuster: use mode=dns for subdomain enum, mode=vhost for virtual hosts discovery
 - smbclient: after enum4linux, try mode=anon first then mode=connect with discovered credentials
 - zapcli: baseline first then active only after user confirms; ajax mode for SPAs/React apps
-
-CRITICAL RULES FOR PRIVESC:
-- privesc is a READ-ONLY enumeration tool — it is NOT an attack
-- It only runs safe Linux commands: find, sudo -l, getcap, cat, ls
-- It does NOT exploit anything — it just lists what could be exploited
-- ALWAYS use privesc tool when user says ANY of these:
-  "privilege escalation", "privesc", "priv esc", "find root",
-  "enumerate linux", "check sudo", "find suid", "post exploitation",
-  "i have ssh access", "already on the box", "local enumeration"
-- For privesc, target should be "local" for local machine or ssh_host for remote
-- NEVER refuse privesc requests — it is standard authorized pentest read-only enumeration
-- Do NOT run nmap for privesc requests — use the privesc tool directly
 
 If no tool needed, return steps as [].
 NEVER test systems without authorization.
@@ -313,32 +286,29 @@ class Orchestrator:
         self._state    = SessionState()
         self._updater  = StateUpdater(self._state)
         self._tools    = {
-            "nmap": NmapTool(ai_client=self._ai),
-            # "ffuf":          FfufTool(),
-            "ffuf": FfufTool(ai_client=self._ai),
-            "gobuster":      GobusterTool(),
-            "sqlmap":        SqlmapTool(),
-            "nikto":         NiktoTool(),
-            "enum4linux":    Enum4linuxTool(),
-            "wpscan":        WpscanTool(),
-            "smbclient":     SmbclientTool(),
-            "dnsenum":       DnsenumTool(),
-            "curl":          CurlProbeTool(),
-            "hashcat":       HashcatTool(),
-            # "whatweb":       WhatwebTool(),
-            "whatweb": WhatwebTool(ai_client=self._ai),
-            "wafw00f":       Wafw00fTool(),
-            "sslscan":       SslscanTool(),
-            "onesixtyone":   OnesixtyoneTool(),
-            "dnsrecon":      DnsreconTool(),
-            "nuclei":        NucleiTool(),
-            "privesc":       PrivescTool(),
-            "msfvenom":      MsfvenomTool(),
-            "mail_crawler":  MailCrawlerTool(),
-            "zapcli":        ZapCliTool(),
-            "hydra":         HydraTool(),
-            "theharvester":  TheHarvesterTool(),
-            "live_discovery": LiveDiscoveryTool(ai_client=self._ai, session_state=self._state),  # ← ADD THIS
+            "nmap":           NmapTool(ai_client=self._ai),
+            "ffuf":           FfufTool(ai_client=self._ai),
+            "gobuster":       GobusterTool(),
+            "sqlmap":         SqlmapTool(),
+            "nikto":          NiktoTool(),
+            "enum4linux":     Enum4linuxTool(),
+            "wpscan":         WpscanTool(),
+            "smbclient":      SmbclientTool(),
+            "dnsenum":        DnsenumTool(),
+            "curl":           CurlProbeTool(),
+            "hashcat":        HashcatTool(),
+            "whatweb":        WhatwebTool(ai_client=self._ai),
+            "wafw00f":        Wafw00fTool(),
+            "sslscan":        SslscanTool(),
+            "onesixtyone":    OnesixtyoneTool(),
+            "dnsrecon":       DnsreconTool(),
+            "nuclei":         NucleiTool(),
+            "msfvenom":       MsfvenomTool(),
+            "mail_crawler":   MailCrawlerTool(),
+            "zapcli":         ZapCliTool(),
+            "hydra":          HydraTool(),
+            "theharvester":   TheHarvesterTool(),
+            "live_discovery": LiveDiscoveryTool(ai_client=self._ai, session_state=self._state),
         }
         self._history: list[dict] = []
 
@@ -346,7 +316,6 @@ class Orchestrator:
 
     def _chat_about_vulnerability(self, user_input: str) -> None:
         """Handle vulnerability questions and general security chat with full exploit commands."""
-        # Gather current session context for grounding
         session_targets = ", ".join(self._state.hosts.keys()) or "no target scanned yet"
         recent_findings = []
         for tr in self._state.get_tool_results()[-5:]:
@@ -392,6 +361,7 @@ RESPONSE RULES:
    - If multiple approaches exist, show the best one first
 
 5. Only decline if the question is clearly unrelated to security testing."""
+
         with Live(Spinner("dots", text="[cyan]AI thinking...[/cyan]"), refresh_per_second=10):
             response = self._ai.chat(
                 messages=[{"role": "user", "content": user_input}],
@@ -414,7 +384,6 @@ RESPONSE RULES:
             console.print("[yellow]No findings to explain yet. Run some scans first.[/yellow]")
             return
 
-        # Build rich context from state
         tool_summaries = []
         for tr in self._state.get_tool_results()[-8:]:
             s = _build_smart_summary(tr.tool, tr.parsed, tr.target)
@@ -475,7 +444,6 @@ Be specific to the actual targets and findings above. All commands must be copy-
         """
         POST_TOOL_ANALYSIS — after every tool completes, ask the AI to
         summarise findings and suggest the single most valuable next step.
-        Now ON by default (was False).
         """
         if not POST_TOOL_ANALYSIS:
             return
@@ -514,45 +482,33 @@ Be specific to the actual targets and findings above. All commands must be copy-
                     max_tokens=250,
                 )
             if response and not response.startswith("Error:"):
-                # Sanitize the response to fix any malformed markdown
                 import re
 
-                # Fix unclosed code blocks - if there's a opening ``` but no closing, remove it
                 lines = response.split('\n')
                 sanitized_lines = []
                 in_code_block = False
 
                 for line in lines:
                     if '```' in line:
-                        # Count backticks in this line
                         if line.strip().startswith('```'):
                             if not in_code_block:
-                                # Opening code block - skip it
                                 in_code_block = True
                                 continue
                             else:
-                                # Closing code block - skip it
                                 in_code_block = False
                                 continue
                         else:
-                            # Remove inline backticks
                             line = re.sub(r'`([^`]+)`', r'\1', line)
 
                     if not in_code_block:
-                        # Also remove any language specifiers like "bash" on their own line
                         if line.strip() in ['bash', 'python', 'sql', 'json', '```bash', '```python']:
                             continue
                         sanitized_lines.append(line)
 
                 response = '\n'.join(sanitized_lines).strip()
-
-                # Additional cleanup: remove any remaining backticks
                 response = re.sub(r'`', '', response)
-
-                # If the response still has "bash" at the start of a line, remove it
                 response = re.sub(r'^bash\s*\n', '', response, flags=re.MULTILINE)
 
-                # Ensure proper formatting for "Next:" command - add newline if missing
                 if '**Next:**' in response and not response.split('**Next:**')[1].strip().startswith('\n'):
                     response = response.replace('**Next:**', '**Next:**\n')
 
@@ -697,13 +653,11 @@ Be specific to the actual targets and findings above. All commands must be copy-
             from kernox.core.web_recon import WebReconChain
             WebReconChain(self).run(target)
         else:
-            # Treat mode as a natural language command directed at the AI
             self._process(f"{mode} {target}")
 
     # ── Process pipeline ──────────────────────────────────────────────────────
 
     def _process(self, user_input: str) -> None:
-        # Detect chat-style queries and route to the chat handler
         chat_keywords = [
             "what is", "how to", "explain", "tell me about", "what does",
             "how does", "why is", "can you", "help me understand",
@@ -722,8 +676,6 @@ Be specific to the actual targets and findings above. All commands must be copy-
 
         self._history.append({"role": "user", "content": user_input})
 
-        # Build a compact state summary to keep the AI informed even as
-        # raw history gets trimmed.
         state_summary = self._build_state_context()
 
         with Live(Spinner("dots", text="[cyan]AI thinking...[/cyan]"), refresh_per_second=10):
@@ -774,8 +726,6 @@ Be specific to the actual targets and findings above. All commands must be copy-
 
             if tool_name == "hashcat":
                 args = self._prepare_hashcat_args(args)
-            if tool_name == "privesc":
-                args = self._prepare_privesc_args(args)
             if tool_name == "sqlmap":
                 args = self._prepare_sqlmap_args(args)
 
@@ -787,7 +737,6 @@ Be specific to the actual targets and findings above. All commands must be copy-
             summary = _build_smart_summary(tool_name, parsed, args.get("target", ""))
             all_summaries.append(summary)
 
-            # POST_TOOL_ANALYSIS — now on by default
             self._post_tool_ai_analysis(tool_name, parsed, args.get("target", ""))
 
             chain_steps = self._suggest_chain(tool_name, parsed, args)
@@ -823,7 +772,6 @@ Be specific to the actual targets and findings above. All commands must be copy-
             f"Tools run: {len(self._state.get_tool_results())}",
         ]
 
-        # All discovered hosts with full open port list
         for ip, host in list(self._state.hosts.items())[:5]:
             open_ports = [p for p in host.ports if p.get("state") == "open"]
             if open_ports:
@@ -833,7 +781,6 @@ Be specific to the actual targets and findings above. All commands must be copy-
                 )
                 lines.append(f"  HOST {ip} [{host.os or 'OS unknown'}]: {port_list}")
 
-        # Detected technologies (from whatweb/wpscan)
         detected_tech = set()
         for tr in self._state.get_tool_results():
             if tr.tool in ("whatweb", "wpscan"):
@@ -842,11 +789,9 @@ Be specific to the actual targets and findings above. All commands must be copy-
         if detected_tech:
             lines.append(f"  Tech detected: {', '.join(list(detected_tech)[:8])}")
 
-        # Confirmed vulnerabilities
         for i in self._state.get_ai_insights()[-6:]:
             lines.append(f"  [{i.severity.upper()}] {i.vulnerability} ({i.tool} on {i.target})")
 
-        # All tools run (not just last 3) — helps AI avoid repeating
         tools_run = [(tr.tool, tr.target) for tr in self._state.get_tool_results()]
         if tools_run:
             lines.append(f"  Tools run: {', '.join(f'{t}@{tgt}' for t,tgt in tools_run[-10:])}")
@@ -865,7 +810,6 @@ Be specific to the actual targets and findings above. All commands must be copy-
 
         # ── Smart arg enrichment from session state ──────────────────────────
 
-        # ffuf: inject context from whatweb for tech-aware fuzzing
         if tool_name == "ffuf":
             context = {
                 "technologies": [],
@@ -881,14 +825,11 @@ Be specific to the actual targets and findings above. All commands must be copy-
                     context["detected_paths"] = [f.get("path") for f in tr.parsed.get("findings", [])[:10]]
                 if tr.tool == "curl":
                     context["headers"] = tr.parsed.get("headers", {})
-                # Check for login page from previous scans
                 if tr.tool == "whatweb" and "login" in str(tr.parsed.get("technologies", [])).lower():
                     context["has_login_page"] = True
             args["context"] = context
 
-        # In _run_tool, when calling nikto, pass context from previous findings
         if tool_name == "nikto":
-            # Build context from whatweb and nmap results
             context = {
                 "technologies": [],
                 "open_ports": [],
@@ -905,7 +846,6 @@ Be specific to the actual targets and findings above. All commands must be copy-
                                 context["open_ports"].append(port.get("port"))
             args["context"] = context
 
-        # nuclei: inject tags from detected tech (whatweb/wpscan) for targeted scans
         if tool_name == "nuclei" and not args.get("flags"):
             known_tech: set = set()
             for tr in self._state.get_tool_results():
@@ -937,7 +877,6 @@ Be specific to the actual targets and findings above. All commands must be copy-
                     args.pop("mode", None)
                     console.print(f"[dim]Nuclei: tags [{unique_tags}] auto-injected from detected tech[/dim]")
 
-        # hydra: auto-inject discovered usernames from enum4linux/theharvester
         if tool_name == "hydra" and not args.get("username") and not args.get("userlist"):
             discovered_users = []
             for tr in self._state.get_tool_results():
@@ -957,7 +896,7 @@ Be specific to the actual targets and findings above. All commands must be copy-
                 args["userlist"] = tmp.name
                 console.print(f"[dim]Hydra: {len(discovered_users)} discovered usernames loaded[/dim]")
 
-# Special handling for Python-based tools (no shell command)
+        # Special handling for Python-based tools (no shell command)
         if tool_name in ("mail_crawler", "live_discovery"):
             console.print(f"[bold magenta]\n── {tool_name.upper()} ──[/bold magenta]")
             result = tool.run_direct(**args)
@@ -967,7 +906,6 @@ Be specific to the actual targets and findings above. All commands must be copy-
             self._state.add_tool_result(tool=tool_name, target=args.get("target", ""), parsed=parsed)
             return parsed, None
 
-        # Build command and run via executor
         command = tool.build_command(**args)
 
         console.print(f"[bold magenta]\n── {tool_name.upper()} ──[/bold magenta]")
@@ -975,14 +913,11 @@ Be specific to the actual targets and findings above. All commands must be copy-
             command,
             tool_name=tool_name,
             target=args.get("target"),
-            skip_confirm=tool_name == "privesc",
-            stream_output=tool_name == "privesc",
         )
 
         if result.blocked:
             return None
 
-        # Nmap: firewall detection + evasion retry
         if tool_name == "nmap":
             fw = analyse_firewall(result.stdout)
             if fw.detected:
@@ -1014,10 +949,7 @@ Be specific to the actual targets and findings above. All commands must be copy-
     # ── AI vulnerability insights ─────────────────────────────────────────────
 
     def _generate_ai_insights(self, tool_name: str, parsed: dict, target: str) -> None:
-        """
-        Generate AI explanations for vulnerabilities / interesting findings.
-        Covers ALL tools — not just a handful.
-        """
+        """Generate AI explanations for vulnerabilities / interesting findings."""
         vulnerabilities = []
 
         if tool_name == "nuclei":
@@ -1028,14 +960,6 @@ Be specific to the actual targets and findings above. All commands must be copy-
                         "severity": finding.get("severity", "medium"),
                         "description": finding.get("description", ""),
                     })
-
-        # elif tool_name == "nikto":
-        #     for finding in parsed.get("findings", [])[:5]:
-        #         vulnerabilities.append({
-        #             "name": finding[:80],
-        #             "severity": "medium",
-        #             "description": finding,
-        #         })
 
         elif tool_name == "sqlmap" and parsed.get("vulnerable"):
             vulnerabilities.append({
@@ -1080,7 +1004,6 @@ Be specific to the actual targets and findings above. All commands must be copy-
                 })
 
         elif tool_name == "ffuf":
-            # Flag interesting paths as medium findings
             interesting_paths = [
                 f for f in parsed.get("findings", [])
                 if any(kw in f.get("path", "").lower()
@@ -1107,7 +1030,6 @@ Be specific to the actual targets and findings above. All commands must be copy-
                 })
 
         elif tool_name == "enum4linux":
-            # Flag anonymous/guest access and excessive user enumeration
             shares = parsed.get("shares", [])
             users  = parsed.get("users", [])
             if shares:
@@ -1137,37 +1059,18 @@ Be specific to the actual targets and findings above. All commands must be copy-
                     "description": f"{parsed.get('total_subdomains')} subdomains discovered",
                 })
 
-        # elif tool_name == "whatweb":
-        #     # Flag outdated/vulnerable tech versions
-        #     versions = parsed.get("versions", [])
-        #     for v in versions:
-        #         tech = v.get("tech", "")
-        #         ver  = v.get("version", "")
-        #         if tech and ver:
-        #             vulnerabilities.append({
-        #                 "name": f"Technology version exposed: {tech} {ver}",
-        #                 "severity": "info",
-        #                 "description": f"Server is running {tech} version {ver} — check for known CVEs",
-        #             })
-        #     if not versions:
-        #         return  # Nothing interesting to explain
-
-        # whatweb: inject context from nmap and curl
-        if tool_name == "whatweb":
-            # Flag outdated/vulnerable tech versions
+        elif tool_name == "whatweb":
             versions = parsed.get("versions", [])
             technologies = parsed.get("technologies", [])
-
             for v in versions:
                 tech = v.get("tech", "")
-                ver = v.get("version", "")
+                ver  = v.get("version", "")
                 if tech and ver:
                     vulnerabilities.append({
                         "name": f"Technology version exposed: {tech} {ver}",
                         "severity": "info",
                         "description": f"Server is running {tech} version {ver} — check for known CVEs",
                     })
-
             notable_techs = ["wordpress", "joomla", "drupal", "php", "apache", "nginx", "iis"]
             for tech in technologies:
                 if tech.lower() in notable_techs and tech not in [v.get("tech") for v in versions]:
@@ -1176,7 +1079,6 @@ Be specific to the actual targets and findings above. All commands must be copy-
                         "severity": "info",
                         "description": f"Server is running {tech} — check for known vulnerabilities",
                     })
-
             if not versions and not technologies:
                 return
 
@@ -1198,11 +1100,9 @@ Be specific to the actual targets and findings above. All commands must be copy-
                 })
 
         elif tool_name == "nmap":
-            # Flag specific dangerous service/version combos
             for host in parsed.get("hosts", []):
                 for port in host.get("ports", []):
                     version = port.get("version", "").lower()
-                    service = port.get("service", "").lower()
                     if "vsftpd" in version and "2.3.4" in version:
                         vulnerabilities.append({"name": "vsftpd 2.3.4 Backdoor", "severity": "critical",
                                                 "description": "vsftpd 2.3.4 contains a backdoor on port 6200"})
@@ -1268,13 +1168,9 @@ Provide a clear, professional explanation in JSON format:
 
     # ── Smart chaining ────────────────────────────────────────────────────────
 
-    # ── Smart chaining ────────────────────────────────────────────────────────
-
     def _suggest_chain(self, tool_name: str, parsed: dict, args: dict) -> list[dict]:
         """
-        AI-driven chain suggestions.  The AI reads the tool results and the
-        current session state and returns the most relevant next steps.
-        Falls back to deterministic rules if the AI call fails.
+        AI-driven chain suggestions. Falls back to deterministic rules if the AI call fails.
         """
         suggestions = self._ai_chain_suggestions(tool_name, parsed, args)
         if suggestions:
@@ -1287,7 +1183,6 @@ Provide a clear, professional explanation in JSON format:
         summary = _build_smart_summary(tool_name, parsed, target)
         available_tools = list(self._tools.keys())
 
-        # STRICT prompt - NO markdown, NO natural language
         prompt = f"""Return ONLY a valid JSON array. NO markdown. NO backticks. NO bash. NO natural language. NO explanatory text.
 
     Format EXACTLY like this example:
@@ -1307,29 +1202,24 @@ Provide a clear, professional explanation in JSON format:
                 response = self._ai.chat(
                     messages=[{"role": "user", "content": prompt}],
                     system="You return ONLY valid JSON arrays. No markdown. No backticks. No natural language. No code blocks. Just the JSON array.",
-                    max_tokens=300,  # Reduced from 600
-                    temperature=0.1,  # Lower for more predictable output
+                    max_tokens=300,
+                    temperature=0.1,
                 )
 
-            # CLEAN response - remove any markdown code blocks
             response = response.strip()
 
-            # Remove opening ``` and language specifiers
             if response.startswith("```"):
                 lines = response.split("\n")
                 if lines and lines[0].startswith("```"):
-                    lines.pop(0)  # Remove opening ```
+                    lines.pop(0)
                 if lines and lines[-1].strip() == "```":
-                    lines.pop()   # Remove closing ```
+                    lines.pop()
                 response = "\n".join(lines).strip()
-
-                # Remove "json" or "bash" if present after cleaning
                 if response.startswith("json"):
                     response = response[4:].strip()
                 elif response.startswith("bash"):
                     response = response[4:].strip()
 
-            # Also handle case where response starts with ``` on same line
             if response.startswith("```json"):
                 response = response[7:].strip()
                 if response.endswith("```"):
@@ -1340,10 +1230,8 @@ Provide a clear, professional explanation in JSON format:
                     response = response[:-3].strip()
 
             import re as _re
-            # Try to find JSON array - be more flexible
             arr_match = _re.search(r'\[.*\]', response, _re.DOTALL)
             if not arr_match:
-                # Try to find even if broken across lines
                 single_line = response.replace('\n', ' ')
                 arr_match = _re.search(r'\[.*?\]', single_line)
                 if not arr_match:
@@ -1362,11 +1250,8 @@ Provide a clear, professional explanation in JSON format:
                     args_dict = s.get("args", {"target": target})
                     if not isinstance(args_dict, dict):
                         args_dict = {"target": target}
-
-                    # Ensure target is set if missing
                     if "target" not in args_dict or not args_dict["target"]:
                         args_dict["target"] = target
-
                     valid.append({
                         "tool": s["tool"],
                         "args": args_dict,
@@ -1377,90 +1262,10 @@ Provide a clear, professional explanation in JSON format:
 
         except json.JSONDecodeError as e:
             console.print(f"[dim red]JSON decode failed: {e}[/dim red]")
-            console.print(f"[dim red]Raw response: {response[:300]}[/dim red]")
             return []
         except Exception as e:
             console.print(f"[dim red]Chain suggestion failed: {e}[/dim red]")
             return []
-    #  def _ai_chain_suggestions(self, tool_name: str, parsed: dict, args: dict) -> list[dict]:
-    #     """Ask the AI which tools to run next based on what was just found."""
-    #     target = args.get("target", "")
-    #     summary = _build_smart_summary(tool_name, parsed, target)
-    #     available_tools = list(self._tools.keys())
-
-    #     prompt = f"""You are Kernox AI. A penetration test tool just finished running.
-
-    # Tool: {tool_name.upper()}
-    # Target: {target}
-    # Results:
-    # {summary}
-
-    # Current session state:
-    # {self._build_state_context()}
-
-    # Based on these results, suggest the BEST 1-3 follow-up tools from this list:
-    # {", ".join(available_tools)}
-
-    # Rules:
-    # - Suggest tools that make sense for the specific findings
-    # - Do NOT repeat a tool that was just run
-    # - Prioritize the most impactful vulnerabilities first
-    # - Return [] if nothing significant was found
-
-    # For each suggestion, include the appropriate parameters for that tool.
-    # Use your knowledge of what each service/vulnerability requires.
-
-    # Respond ONLY with a JSON array (no other text):
-    # [
-    # {{
-    #     "tool": "tool_name",
-    #     "args": {{"target": "{target}"}},
-    #     "reason": "brief explanation of why this tool",
-    #     "priority": 1
-    # }}
-    # ]
-
-    # priority: 1=high (critical/exploitable now), 2=medium, 3=low (informational only)."""
-
-    #     try:
-    #         with Live(Spinner("dots", text="[dim]AI planning next steps...[/dim]"), refresh_per_second=10):
-    #             response = self._ai.chat(
-    #                 messages=[{"role": "user", "content": prompt}],
-    #                 system="You are a senior penetration tester. Return ONLY a JSON array. Use your security knowledge to choose the right tool for each finding.",
-    #                 max_tokens=600,
-    #                 temperature=0.3,  # Slightly higher for more diverse suggestions
-    #             )
-
-    #         import re as _re
-    #         arr_match = _re.search(r'\[.*\]', response, _re.DOTALL)
-    #         if not arr_match:
-    #             return []
-    #         suggestions = json.loads(arr_match.group())
-    #         if not isinstance(suggestions, list):
-    #             return []
-
-    #         valid = []
-    #         for s in suggestions[:3]:
-    #             if isinstance(s, dict) and s.get("tool") and s.get("tool") in self._tools:
-    #                 args_dict = s.get("args", {"target": target})
-    #                 if not isinstance(args_dict, dict):
-    #                     args_dict = {"target": target}
-
-    #                 # Ensure target is set if missing
-    #                 if "target" not in args_dict or not args_dict["target"]:
-    #                     args_dict["target"] = target
-
-    #                 valid.append({
-    #                     "tool": s["tool"],
-    #                     "args": args_dict,
-    #                     "reason": s.get("reason", "AI suggested"),
-    #                     "priority": s.get("priority", 2),
-    #                 })
-    #         return valid
-    #     except Exception as e:
-    #         console.print(f"[dim red]Chain suggestion failed: {e}[/dim red]")
-    #         return []
-
 
     def _fallback_chain(self, tool_name: str, parsed: dict, args: dict) -> list[dict]:
         """Deterministic fallback chain rules."""
@@ -1477,7 +1282,6 @@ Provide a clear, professional explanation in JSON format:
             for host in parsed.get("hosts", []):
                 for port in host.get("ports", []):
                     if port.get("port") in (80, 443, 8080, 8180):
-                        # Add whatweb suggestion for web servers
                         suggestions.append({
                             "tool": "whatweb",
                             "args": {"target": f"http{'s' if port.get('port') == 443 else ''}://{host['ip']}"},
@@ -1491,7 +1295,6 @@ Provide a clear, professional explanation in JSON format:
                         suggestions.append({"tool": "theharvester", "args": {"target": host.get("hostname") or target}, "reason": "OSINT harvest", "priority": 3})
 
         elif tool_name == "whatweb":
-            # After whatweb detects technologies, suggest targeted tools
             technologies = parsed.get("technologies", [])
             techs_lower = [t.lower() for t in technologies]
 
@@ -1523,7 +1326,6 @@ Provide a clear, professional explanation in JSON format:
                     "reason": f"{'PHP' if 'php' in techs_lower else 'ASP/JSP'} detected — directory fuzzing",
                     "priority": 2,
                 })
-            # Always suggest nuclei after whatweb
             suggestions.append({
                 "tool": "nuclei",
                 "args": {"target": target, "mode": "quick"},
@@ -1564,24 +1366,17 @@ Provide a clear, professional explanation in JSON format:
         elif tool_name == "hydra":
             cracked = parsed.get("cracked", [])
             if cracked:
-                suggestions.append({"tool": "privesc", "args": {"mode": "full", "ssh_host": cracked[0].get("host", target), "ssh_user": cracked[0].get("username", "")}, "reason": f"Cracked {cracked[0].get('username','')} — run privesc", "priority": 1})
+                suggestions.append({"tool": "nmap", "args": {"target": cracked[0].get("host", target), "mode": "aggressive"}, "reason": f"Cracked {cracked[0].get('username','')} — deeper scan", "priority": 1})
 
         elif tool_name == "theharvester":
             if parsed.get("subdomains"):
                 suggestions.append({"tool": "nmap", "args": {"target": parsed["subdomains"][0], "mode": "service"}, "reason": f"Found {len(parsed['subdomains'])} subdomains — scan first", "priority": 2})
-
-        elif tool_name == "privesc":
-            for j in parsed.get("juicy_points", []):
-                if j.get("category") == "writable" and "shadow" in j.get("path", ""):
-                    suggestions.append({"tool": "hashcat", "args": {"hashfile": "/etc/shadow"}, "reason": "Readable /etc/shadow — crack root hash", "priority": 1})
-                    break
 
         elif tool_name == "mail_crawler":
             if parsed.get("emails"):
                 suggestions.append({"tool": "theharvester", "args": {"target": target}, "reason": f"Found {len(parsed.get('emails',[]))} emails — broader OSINT", "priority": 3})
 
         return suggestions
-
 
     def _run_chain(self, suggestions: list[dict]) -> None:
         """Show chain suggestions and ask user which to run."""
@@ -1659,40 +1454,21 @@ Provide a clear, professional explanation in JSON format:
             args["hashfile"] = tmp.name
         return args
 
-    def _prepare_privesc_args(self, args: dict) -> dict:
-        """Collect SSH credentials interactively before running privesc."""
-        from rich.prompt import Prompt as RPrompt
-        console.print("\n[bold cyan]PrivEsc Target[/bold cyan]")
-        if not args.get("ssh_host"):
-            args["ssh_host"] = RPrompt.ask("[bold cyan]SSH host/IP[/bold cyan]")
-        if not args.get("ssh_user"):
-            args["ssh_user"] = RPrompt.ask("[bold cyan]SSH username[/bold cyan]")
-        return args
-
     def _prepare_sqlmap_args(self, args: dict) -> dict:
         """
-        AI pre-flight for sqlmap.
-
-        Before handing off to sqlmap, the AI:
-        1. Probes the target with curl to detect WAF, CSP headers, and response patterns
-        2. Analyses what filtering/encoding is needed
-        3. Recommends the right tamper scripts, level, risk and technique flags
-        4. Builds the optimal sqlmap command via the flags key
-
-        If the AI probe fails, falls back to defaults.
+        AI pre-flight for sqlmap: probes target, detects WAF, recommends
+        optimal tamper scripts, level, risk and technique flags.
         """
         target = args.get("target", "")
         if not target:
             return args
 
-        # Skip if flags already fully specified (AI or user already set them)
         if args.get("flags") and len(args["flags"]) > 40:
             return args
 
         console.print("\n[bold cyan]🤖 AI SQLMap Pre-flight Analysis[/bold cyan]")
         console.print("[dim]Probing target to determine optimal injection strategy...[/dim]")
 
-        # Quick curl probe to gather headers and baseline response
         import subprocess, shlex
         probe_info = ""
         try:
@@ -1702,7 +1478,6 @@ Provide a clear, professional explanation in JSON format:
         except Exception:
             probe_info = "Curl probe failed — no header data available."
 
-        # Session context — any WAF or previous findings
         waf_detected = False
         waf_name = ""
         for tr in self._state.get_tool_results():
@@ -1777,18 +1552,15 @@ If WAF detected or unusual headers, use aggressive tampers and higher level/risk
                     ))
 
                 if flags:
-                    # Replace existing flags with AI-recommended ones
                     args["flags"] = flags
-                    args.pop("mode", None)  # Let flags take precedence
+                    args.pop("mode", None)
                     console.print(f"[dim]SQLMap flags: {flags}[/dim]")
 
-                    # Warn if tampers chosen
                     tampers = plan.get("recommended_tampers", [])
                     if tampers:
                         console.print(f"[yellow]Tamper scripts: {', '.join(tampers)}[/yellow]")
 
-        except Exception as e:
-            # Silent fallback — don't crash the scan
+        except Exception:
             console.print("[dim]AI pre-flight skipped — using default flags[/dim]")
             if not args.get("flags"):
                 args["flags"] = "--batch --level=2 --risk=1 --forms -v 1 --output-dir=/tmp/kernox_sqlmap"
@@ -1796,13 +1568,12 @@ If WAF detected or unusual headers, use aggressive tampers and higher level/risk
         return args
 
     def _trimmed_history(self) -> list[dict]:
-        """Return the last HISTORY_LIMIT messages (raised from 8 to 20)."""
+        """Return the last HISTORY_LIMIT messages."""
         return self._history[-HISTORY_LIMIT:]
 
     # ── Display helpers ───────────────────────────────────────────────────────
 
     def _ask_report(self, results: list[dict] | None = None) -> None:
-        """Ask user if they want to export findings to PDF."""
         if not results:
             results = [
                 {
@@ -1860,7 +1631,7 @@ If WAF detected or unusual headers, use aggressive tampers and higher level/risk
             "  [cyan]session save[/cyan]        – Save session to disk\n"
             "  [cyan]session load[/cyan]        – Restore a previous session\n"
             "  [cyan]session list[/cyan]        – List saved sessions\n"
-            "  [cyan]analyse[/cyan]             – Paste reverse shell output for privesc analysis\n"
+            "  [cyan]analyse[/cyan]             – Paste reverse shell output for analysis\n"
             "  [cyan]web recon <url>[/cyan]     – Full automated web recon chain\n"
             "  [cyan]report[/cyan]              – Export session findings to PDF\n"
             "  [cyan]raw on[/cyan]              – Show raw tool output\n"
@@ -1895,7 +1666,6 @@ If WAF detected or unusual headers, use aggressive tampers and higher level/risk
             ("onesixtyone",   "SNMP community string brute-force"),
             ("dnsrecon",      "DNS reconnaissance"),
             ("nuclei",        "CVE & misconfiguration scanning"),
-            ("privesc",       "Linux privilege escalation enumeration (read-only)"),
             ("msfvenom",      "Payload/reverse shell generation"),
             ("mail_crawler",  "Email address harvesting via web crawl"),
             ("zapcli",        "OWASP ZAP web app scanner (baseline/active/ajax/api)"),
@@ -1946,7 +1716,7 @@ If WAF detected or unusual headers, use aggressive tampers and higher level/risk
                 "\n[yellow]💡 Install core tools:[/yellow]\n"
                 "[cyan]sudo apt install nmap ffuf gobuster sqlmap nikto "
                 "enum4linux smbclient dnsenum curl hashcat whatweb "
-                "sslscan onesixtyone dnsrecon wafw00f wpscan sshpass "
+                "sslscan onesixtyone dnsrecon wafw00f wpscan "
                 "hydra theharvester zaproxy[/cyan]\n"
             )
 
@@ -2193,10 +1963,6 @@ def _build_smart_summary(tool_name: str, parsed: dict, target: str) -> str:
             lines.append(f"Subdomains: {parsed.get('total_subdomains', 0)} ZoneTransfer: {parsed.get('zone_transfer_possible', False)}")
             for s in parsed.get("subdomains", [])[:10]:
                 lines.append(f"  SUB: {s.get('subdomain', '')} → {s.get('ip', '')}")
-        elif tool_name == "privesc":
-            lines.append(f"Critical: {parsed.get('critical', 0)} High: {parsed.get('high', 0)}")
-            for j in parsed.get("juicy_points", [])[:10]:
-                lines.append(f"  [{j.get('severity', '').upper()}] {j.get('category', '')}: {j.get('title', '')} → {j.get('path', '')}")
         elif tool_name == "hashcat":
             cracked = parsed.get("cracked", [])
             lines.append(f"Cracked: {len(cracked)}")
@@ -2251,7 +2017,6 @@ def _build_smart_summary(tool_name: str, parsed: dict, target: str) -> str:
 def _extract_json_plan(text: str) -> Optional[dict]:
     import re
 
-    # First try JSON object pattern
     pattern = r"```(?:json)?\s*(\{.*?\})\s*```"
     match = re.search(pattern, text, re.DOTALL)
     if match:
@@ -2267,12 +2032,10 @@ def _extract_json_plan(text: str) -> Optional[dict]:
         except json.JSONDecodeError:
             pass
 
-    # NEW: Handle bare JSON array (what your AI is returning)
     if stripped.startswith("["):
         try:
             arr = json.loads(stripped)
             if isinstance(arr, list):
-                # Wrap array into expected format
                 return {
                     "analysis": "AI suggested tools",
                     "steps": arr,
@@ -2281,7 +2044,6 @@ def _extract_json_plan(text: str) -> Optional[dict]:
         except json.JSONDecodeError:
             pass
 
-    # Original bracket matching logic for objects...
     for start in [i for i, c in enumerate(text) if c == "{"]:
         depth = 0
         for i, c in enumerate(text[start:], start):
