@@ -194,9 +194,9 @@ class Executor:
 
         # 2. Optional confirmation — skip if tool handles its own interaction
         if not skip_confirm and self._cfg.get("confirm_before_exec") == "1":
-            console.print(
-                f"\n[bold yellow]⚡ About to run:[/bold yellow] {command}...\n"
-            )
+            # console.print(
+            #     f"\n[bold yellow]⚡ About to run:[/bold yellow] {command}...\n"
+            # )
             if not Confirm.ask("Execute?", default=True):
                 console.print("[yellow]Skipped.[/yellow]")
                 return ExecutionResult(
