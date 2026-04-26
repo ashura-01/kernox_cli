@@ -958,6 +958,11 @@ FORMATTERS = {
 
 def format_results(tool_name: str, parsed: dict) -> None:
     """Dispatch to the correct formatter for *tool_name*."""
+
+    # Skip recon - AI already displayed clean summary
+    if tool_name == "recon":
+        return
+
     if tool_name == "privesc":
         from kernox.utils.privesc_formatter import format_privesc
         format_privesc(parsed)

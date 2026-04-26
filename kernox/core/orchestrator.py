@@ -71,6 +71,7 @@ from kernox.tools.zapcli import ZapCliTool
 from kernox.tools.hydra import HydraTool
 from kernox.tools.theharvester import TheHarvesterTool
 from kernox.tools.live_discovery import LiveDiscoveryTool
+from kernox.tools.recon import ReconTool
 
 console = Console()
 
@@ -126,6 +127,12 @@ ffuf:
     - "fuzz example.com" → AI chooses strategy
     - "find subdomains on test.example.com" → mode="vhost"
     - "fuzz parameters on https://site.com/page?id=FUZZ" → mode="param"
+recon:
+  args: target (domain or IP), mode (full/quick)
+  Use for complete reconnaissance on a target.
+  Runs: whois, nslookup, dig, ping, traceroute, HTTP headers
+  Then analyzes results with AI and suggests next steps.
+  Example: {"target": "example.com", "mode": "full"}
 
 gobuster:
   args: target, mode (dir/dns/vhost/s3/custom), wordlist
@@ -309,6 +316,7 @@ class Orchestrator:
             "hydra":          HydraTool(),
             "theharvester":   TheHarvesterTool(),
             "live_discovery": LiveDiscoveryTool(ai_client=self._ai, session_state=self._state),
+            "recon": ReconTool(ai_client=self._ai),
         }
         self._history: list[dict] = []
 
@@ -803,10 +811,23 @@ Be specific to the actual targets and findings above. All commands must be copy-
 
     def _run_tool(self, tool_name: str, args: dict) -> Optional[tuple[dict, object]]:
         """Run a single tool. Returns (parsed, result) or None if blocked."""
-        tool = self._tools.get(tool_name)
-        if not tool:
-            console.print(f"[red]Unknown tool: {tool_name}[/red]")
-            return None
+
+        # Handle recon tool specially (no shell command)
+        if tool_name == "recon":
+            tool = self._tools.get("recon")
+            if tool and hasattr(tool, 'run_direct'):
+                # Run directly without executor
+                parsed = tool.run_direct(**args)
+                self._state.add_tool_result(
+                    tool=tool_name,
+                    target=args.get("target", ""),
+                    parsed=parsed,
+                    raw_output=str(parsed)
+                )
+                self._updater.apply(tool_name, parsed, target=args.get("target"))
+                # format_results(tool_name, parsed)  # ← COMMENT THIS OUT
+                self._generate_ai_insights(tool_name, parsed, args.get("target", ""))
+                return parsed, None
 
         # ── Smart arg enrichment from session state ──────────────────────────
 
@@ -940,12 +961,13 @@ Be specific to the actual targets and findings above. All commands must be copy-
         )
 
         self._updater.apply(tool_name, parsed, target=args.get("target"))
-        format_results(tool_name, parsed)
+        # Skip format_results for recon to avoid duplicate output
+        if tool_name != "recon":
+            format_results(tool_name, parsed)
         _explain_findings(tool_name, parsed)
         self._generate_ai_insights(tool_name, parsed, args.get("target", ""))
 
         return parsed, result
-
     # ── AI vulnerability insights ─────────────────────────────────────────────
 
     def _generate_ai_insights(self, tool_name: str, parsed: dict, target: str) -> None:
