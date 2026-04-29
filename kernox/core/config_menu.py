@@ -37,7 +37,7 @@ def open_config_menu() -> None:
         choice = Prompt.ask("Select option", choices=["1", "2", "3", "4", "5", "6", "7", "q"])
 
         if choice == "q":
-            console.print("[yellow]Exiting config menu.[/yellow]")
+            console.print("[dim cyan]Exiting config menu.[/dim cyan]")
             break
         elif choice == "1":
             _change_backend(cfg, ks)
@@ -58,7 +58,7 @@ def open_config_menu() -> None:
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _show_current_config(cfg: ConfigStore) -> None:
-    table = Table(show_header=True, header_style="bold magenta")
+    table = Table(show_header=True, header_style="bold cyan")
     table.add_column("Key", style="cyan")
     table.add_column("Value", style="white")
     for key, value in cfg.all().items():
@@ -103,14 +103,14 @@ def _update_api_key(cfg: ConfigStore, ks: KeyStore) -> None:
         ks.store(key_name, new_key)
         console.print("[green]✓ Key updated.[/green]\n")
     else:
-        console.print("[yellow]No key entered. Unchanged.[/yellow]\n")
+        console.print("[dim cyan]No key entered. Unchanged.[/dim cyan]\n")
 
 
 def _toggle_raw_output(cfg: ConfigStore) -> None:
     current = cfg.get("show_raw_output") == "1"
     new_val = not current
     cfg.set("show_raw_output", "1" if new_val else "0")
-    state = "[green]ON[/green] (verbose)" if new_val else "[yellow]OFF[/yellow] (silent + spinner)"
+    state = "[green]ON[/green] (verbose)" if new_val else "[dim cyan]OFF[/dim cyan] (silent + spinner)"
     console.print(f"[green]✓ Raw tool output {state}[/green]\n")
 
 
@@ -136,14 +136,14 @@ def _show_key_names(ks: KeyStore) -> None:
     if names:
         console.print("[cyan]Stored key names:[/cyan] " + ", ".join(names))
     else:
-        console.print("[yellow]No keys stored.[/yellow]")
+        console.print("[dim cyan]No keys stored.[/dim cyan]")
     console.print()
 
 
 def _delete_key(ks: KeyStore) -> None:
     names = ks.list_keys()
     if not names:
-        console.print("[yellow]No keys to delete.[/yellow]\n")
+        console.print("[dim cyan]No keys to delete.[/dim cyan]\n")
         return
     name = Prompt.ask("Key name to delete", choices=names)
     ks.delete(name)

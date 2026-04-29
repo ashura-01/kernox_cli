@@ -30,8 +30,8 @@ def _retry_request(fn, retries: int = _MAX_RETRIES, delay: float = _RETRY_DELAY)
             if attempt < retries:
                 wait = delay * (2 ** (attempt - 1))
                 console.print(
-                    f"[yellow]⚠ API connection error (attempt {attempt}/{retries}). "
-                    f"Retrying in {wait:.0f}s…[/yellow]"
+                    f"[cyan]⚠ API connection error (attempt {attempt}/{retries}). "
+                    f"Retrying in {wait:.0f}s…[/cyan]"
                 )
                 time.sleep(wait)
         except requests.HTTPError as exc:
@@ -41,8 +41,8 @@ def _retry_request(fn, retries: int = _MAX_RETRIES, delay: float = _RETRY_DELAY)
                 if attempt < retries:
                     wait = delay * (2 ** (attempt - 1))
                     console.print(
-                        f"[yellow]⚠ Server error {exc.response.status_code} "
-                        f"(attempt {attempt}/{retries}). Retrying in {wait:.0f}s…[/yellow]"
+                        f"[cyan]⚠ Server error {exc.response.status_code} "
+                        f"(attempt {attempt}/{retries}). Retrying in {wait:.0f}s…[/cyan]"
                     )
                     time.sleep(wait)
             else:

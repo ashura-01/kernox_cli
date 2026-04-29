@@ -47,7 +47,7 @@ def _risk_label(port: int, service: str) -> str:
 def format_nmap(parsed: dict) -> None:
     hosts = parsed.get("hosts", [])
     if not hosts:
-        console.print("[yellow]No hosts found in nmap output.[/yellow]")
+        console.print("[#00b894]No hosts found in nmap output.[/#00b894]")
         return
 
     for host in hosts:
@@ -75,13 +75,13 @@ def format_nmap(parsed: dict) -> None:
         console.print(Panel(summary, title=title, border_style="cyan", box=box.ROUNDED))
 
         if not open_ports:
-            console.print("[yellow]  No open ports found.[/yellow]\n")
+            console.print("[#00b894]  No open ports found.[/#00b894]\n")
             continue
 
         # Ports table
         table = Table(
             show_header=True,
-            header_style="bold magenta",
+            header_style="bold cyan",
             box=box.SIMPLE_HEAVY,
             border_style="dim",
             pad_edge=False,
@@ -139,7 +139,7 @@ def format_nikto(parsed: dict) -> None:
     header.append("  Target: ", style="dim")
     header.append(f"{target}\n", style="cyan")
     header.append("  Server: ", style="dim")
-    header.append(f"{server}\n", style="yellow")
+    header.append(f"{server}\n", style="#00b894")
     header.append("  Findings: ", style="dim")
     header.append(f"{len(findings)}", style="bold red" if findings else "green")
     if osvdb:
@@ -155,7 +155,7 @@ def format_nikto(parsed: dict) -> None:
 
     table = Table(
         show_header=True,
-        header_style="bold magenta",
+        header_style="bold cyan",
         box=box.SIMPLE_HEAVY,
         border_style="dim",
         show_lines=True,
@@ -189,14 +189,14 @@ def format_enum4linux(parsed: dict) -> None:
     header.append(f"{os_info}\n", style="cyan")
     if domain:
         header.append("  Domain: ", style="dim")
-        header.append(f"{domain}\n", style="yellow")
+        header.append(f"{domain}\n", style="#00b894")
     if workgroup:
         header.append("  Workgroup: ", style="dim")
-        header.append(f"{workgroup}\n", style="yellow")
+        header.append(f"{workgroup}\n", style="#00b894")
     header.append("  Users: ", style="dim")
     header.append(f"{len(users)}", style="bold green")
     header.append("  |  Shares: ", style="dim")
-    header.append(f"{len(shares)}", style="bold yellow")
+    header.append(f"{len(shares)}", style="#55efc4")
     header.append("  |  Groups: ", style="dim")
     header.append(f"{len(groups)}", style="bold cyan")
 
@@ -205,8 +205,8 @@ def format_enum4linux(parsed: dict) -> None:
 
     # Users table
     if users:
-        console.print("[bold magenta]── Users ──[/bold magenta]")
-        utbl = Table(show_header=True, header_style="bold magenta",
+        console.print("[bold cyan]── Users ──[/bold cyan]")
+        utbl = Table(show_header=True, header_style="bold cyan",
                      box=box.SIMPLE_HEAVY, border_style="dim")
         utbl.add_column("Username", style="bold green")
         utbl.add_column("RID", style="dim")
@@ -217,10 +217,10 @@ def format_enum4linux(parsed: dict) -> None:
 
     # Shares table
     if shares:
-        console.print("[bold magenta]── Shares ──[/bold magenta]")
-        stbl = Table(show_header=True, header_style="bold magenta",
+        console.print("[bold cyan]── Shares ──[/bold cyan]")
+        stbl = Table(show_header=True, header_style="bold cyan",
                      box=box.SIMPLE_HEAVY, border_style="dim")
-        stbl.add_column("Share", style="bold yellow")
+        stbl.add_column("Share", style="#55efc4")
         stbl.add_column("Type", style="dim")
         stbl.add_column("Comment")
         for s in shares:
@@ -230,8 +230,8 @@ def format_enum4linux(parsed: dict) -> None:
 
     # Groups
     if groups:
-        console.print("[bold magenta]── Groups ──[/bold magenta]")
-        gtbl = Table(show_header=True, header_style="bold magenta",
+        console.print("[bold cyan]── Groups ──[/bold cyan]")
+        gtbl = Table(show_header=True, header_style="bold cyan",
                      box=box.SIMPLE_HEAVY, border_style="dim")
         gtbl.add_column("Group", style="bold cyan")
         gtbl.add_column("RID", style="dim")
@@ -246,7 +246,7 @@ def format_enum4linux(parsed: dict) -> None:
             Panel(
                 f"[dim]Minimum password length:[/dim] [bold]{pw_policy.get('min_length', '?')}[/bold]",
                 title="[bold]Password Policy[/bold]",
-                border_style="yellow",
+                border_style="#00b894",
                 box=box.ROUNDED,
             )
         )
@@ -268,7 +268,7 @@ def format_ffuf(parsed: dict) -> None:
         console.print("[green]  No paths found.[/green]\n")
         return
 
-    table = Table(show_header=True, header_style="bold magenta",
+    table = Table(show_header=True, header_style="bold cyan",
                   box=box.SIMPLE_HEAVY, border_style="dim")
     table.add_column("PATH", style="bold green")
     table.add_column("STATUS", width=8)
@@ -276,7 +276,7 @@ def format_ffuf(parsed: dict) -> None:
 
     for f in findings:
         status = f.get("status", 0)
-        color = "green" if status == 200 else "yellow" if status in (301, 302) else "red"
+        color = "green" if status == 200 else "#00b894" if status in (301, 302) else "red"
         table.add_row(
             f["path"],
             f"[{color}]{status}[/{color}]",
@@ -312,8 +312,8 @@ def format_sqlmap(parsed: dict) -> None:
                         box=box.ROUNDED))
 
     if databases:
-        console.print("[bold magenta]── Databases Found ──[/bold magenta]")
-        dtbl = Table(show_header=True, header_style="bold magenta",
+        console.print("[bold cyan]── Databases Found ──[/bold cyan]")
+        dtbl = Table(show_header=True, header_style="bold cyan",
                      box=box.SIMPLE_HEAVY, border_style="dim")
         dtbl.add_column("Database", style="bold red")
         for db in databases:
@@ -328,16 +328,16 @@ def format_gobuster(parsed: dict) -> None:
     paths = parsed.get("paths", [])
 
     console.print(Panel(
-        f"[dim]Paths found:[/dim] [bold {'green' if paths else 'yellow'}]{len(paths)}[/bold]",
+        f"[dim]Paths found:[/dim] [bold {'green' if paths else '#00b894'}]{len(paths)}[/bold]",
         title="[bold cyan]Gobuster Results[/bold cyan]",
         border_style="cyan", box=box.ROUNDED,
     ))
 
     if not paths:
-        console.print("[yellow]  No paths found.[/yellow]\n")
+        console.print("[#00b894]  No paths found.[/#00b894]\n")
         return
 
-    table = Table(show_header=True, header_style="bold magenta",
+    table = Table(show_header=True, header_style="bold cyan",
                   box=box.SIMPLE_HEAVY, border_style="dim")
     table.add_column("PATH", style="bold green")
 
@@ -360,7 +360,7 @@ def format_wpscan(parsed: dict) -> None:
     header.append("  Vulnerabilities: ", style="dim")
     header.append(str(len(vulns)), style="bold red" if vulns else "green")
     header.append("  | Plugins: ", style="dim")
-    header.append(str(len(plugins)), style="yellow")
+    header.append(str(len(plugins)), style="#00b894")
     header.append("  | Users: ", style="dim")
     header.append(str(len(users)), style="bold cyan")
 
@@ -368,19 +368,19 @@ def format_wpscan(parsed: dict) -> None:
                         border_style="red" if vulns else "cyan", box=box.ROUNDED))
 
     if vulns:
-        console.print("[bold magenta]── Vulnerabilities ──[/bold magenta]")
+        console.print("[bold cyan]── Vulnerabilities ──[/bold cyan]")
         for v in vulns:
             console.print(f"  [red]•[/red] {v}")
         console.print()
 
     if users:
-        console.print("[bold magenta]── Users Found ──[/bold magenta]")
+        console.print("[bold cyan]── Users Found ──[/bold cyan]")
         for u in users:
             console.print(f"  [bold green]•[/bold green] {u}")
         console.print()
 
     if creds:
-        console.print("[bold magenta]── Credentials Cracked ──[/bold magenta]")
+        console.print("[bold cyan]── Credentials Cracked ──[/bold cyan]")
         for c in creds:
             console.print(f"  [bold red]•[/bold red] {c['user']} : {c['pass']}")
         console.print()
@@ -399,7 +399,7 @@ def format_smbclient(parsed: dict) -> None:
         for s in shares:
             console.print(f"  [green]•[/green] {s}")
     if files:
-        console.print("\n[bold magenta]── Files ──[/bold magenta]")
+        console.print("\n[bold cyan]── Files ──[/bold cyan]")
         for f in files[:30]:
             console.print(f"  [dim]{f}[/dim]")
     console.print()
@@ -412,7 +412,7 @@ def format_dnsenum(parsed: dict) -> None:
 
     header = Text()
     header.append("  Subdomains: ", style="dim")
-    header.append(str(len(subs)), style="bold green" if subs else "yellow")
+    header.append(str(len(subs)), style="bold green" if subs else "#00b894")
     header.append("  | NS records: ", style="dim")
     header.append(str(len(ns)), style="cyan")
     header.append("  | MX records: ", style="dim")
@@ -422,7 +422,7 @@ def format_dnsenum(parsed: dict) -> None:
                         border_style="cyan", box=box.ROUNDED))
 
     if subs:
-        table = Table(show_header=True, header_style="bold magenta",
+        table = Table(show_header=True, header_style="bold cyan",
                       box=box.SIMPLE_HEAVY, border_style="dim")
         table.add_column("Subdomain", style="bold green")
         table.add_column("IP", style="cyan")
@@ -443,7 +443,7 @@ def format_curl(parsed: dict) -> None:
     ))
 
     if headers:
-        table = Table(show_header=True, header_style="bold magenta",
+        table = Table(show_header=True, header_style="bold cyan",
                       box=box.SIMPLE_HEAVY, border_style="dim")
         table.add_column("Header", style="bold cyan", width=25)
         table.add_column("Value")
@@ -470,10 +470,10 @@ def format_hashcat(parsed: dict) -> None:
     header.append(f"{status}\n", style="bold cyan")
     if hash_type:
         header.append("  Hash type: ", style="dim")
-        header.append(f"{hash_type}\n", style="yellow")
+        header.append(f"{hash_type}\n", style="#00b894")
     if speed:
         header.append("  Speed: ", style="dim")
-        header.append(f"{speed}\n", style="yellow")
+        header.append(f"{speed}\n", style="#00b894")
     if progress:
         header.append("  Progress: ", style="dim")
         header.append(f"{progress}\n", style="dim")
@@ -490,7 +490,7 @@ def format_hashcat(parsed: dict) -> None:
                         border_style="green" if cracked else "red", box=box.ROUNDED))
 
     if cracked:
-        table = Table(show_header=True, header_style="bold magenta",
+        table = Table(show_header=True, header_style="bold cyan",
                       box=box.SIMPLE_HEAVY, border_style="dim")
         table.add_column("HASH", style="dim", max_width=45)
         table.add_column("PLAINTEXT", style="bold green")
@@ -525,17 +525,17 @@ def format_whatweb(parsed: dict) -> None:
     status = parsed.get("status_code")
     status_text = parsed.get("status_text", "")
     if status:
-        status_color = "green" if status == 200 else "yellow" if 300 <= status < 400 else "red"
+        status_color = "green" if status == 200 else "#00b894" if 300 <= status < 400 else "red"
         header_lines.append(f"[dim]Status:[/dim] [{status_color}]{status} {status_text}[/{status_color}]")
 
     if parsed.get("title"):
         header_lines.append(f"[dim]Title:[/dim] [bold white]{parsed['title']}[/bold white]")
 
     if parsed.get("server"):
-        header_lines.append(f"[dim]Server:[/dim] [yellow]{parsed['server'][:100]}[/yellow]")
+        header_lines.append(f"[dim]Server:[/dim] [#00b894]{parsed['server'][:100]}[/#00b894]")
 
     if parsed.get("powered_by"):
-        header_lines.append(f"[dim]X-Powered-By:[/dim] [yellow]{parsed['powered_by']}[/yellow]")
+        header_lines.append(f"[dim]X-Powered-By:[/dim] [#00b894]{parsed['powered_by']}[/#00b894]")
 
     if parsed.get("redirect"):
         header_lines.append(f"[dim]Redirect:[/dim] [cyan]{parsed['redirect']}[/cyan]")
@@ -561,18 +561,18 @@ def format_whatweb(parsed: dict) -> None:
     # Table of ALL plugins with their values
     plugins = parsed.get("plugins", {})
     if plugins:
-        console.print("\n[bold magenta]📋 All Plugins Detected[/bold magenta]")
+        console.print("\n[bold cyan]📋 All Plugins Detected[/bold cyan]")
 
         table = Table(
             show_header=True,
-            header_style="bold magenta",
+            header_style="bold cyan",
             box=box.SIMPLE_HEAVY,
             border_style="dim",
             show_lines=True
         )
         table.add_column("Plugin", style="bold cyan", width=20)
         table.add_column("Value", style="white", no_wrap=False)
-        table.add_column("Version", style="yellow", width=15)
+        table.add_column("Version", style="#00b894", width=15)
 
         # Build version lookup
         version_map = {v["tech"]: v["version"] for v in parsed.get("versions", [])}
@@ -592,7 +592,7 @@ def format_whatweb(parsed: dict) -> None:
             if plugin_name in ["PHP", "Apache", "nginx", "WordPress", "Drupal", "Joomla"]:
                 plugin_display = f"[bold red]{plugin_name}[/bold red]"
             elif plugin_name in ["X-Powered-By", "HTTPServer", "WebDAV"]:
-                plugin_display = f"[yellow]{plugin_name}[/yellow]"
+                plugin_display = f"[#00b894]{plugin_name}[/#00b894]"
             else:
                 plugin_display = f"[cyan]{plugin_name}[/cyan]"
 
@@ -608,7 +608,7 @@ def format_whatweb(parsed: dict) -> None:
         console.print("\n[bold green]📦 Version Summary[/bold green]")
         version_table = Table(show_header=True, header_style="bold green", box=box.SIMPLE)
         version_table.add_column("Technology", style="bold cyan")
-        version_table.add_column("Version", style="yellow")
+        version_table.add_column("Version", style="#00b894")
         version_table.add_column("Full Value", style="dim")
 
         for v in versions:
@@ -622,7 +622,7 @@ def format_whatweb(parsed: dict) -> None:
     # Emails if found
     emails = parsed.get("emails", [])
     if emails:
-        console.print("\n[bold yellow]📧 Emails Found[/bold yellow]")
+        console.print("\n[#55efc4]📧 Emails Found[/#55efc4]")
         for email in emails:
             console.print(f"  [cyan]✉[/cyan] {email}")
 
@@ -654,13 +654,13 @@ def format_sslscan(parsed: dict) -> None:
     header.append("  Certificate CN: ", style="dim")
     header.append(f"{parsed.get('cert_cn','?')}\n", style="cyan")
     header.append("  Expiry: ", style="dim")
-    header.append(f"{parsed.get('cert_expiry','?')}\n", style="yellow")
+    header.append(f"{parsed.get('cert_expiry','?')}\n", style="#00b894")
     header.append("  Issues: ", style="dim")
     header.append(str(len(issues)), style="bold red" if issues else "green")
     console.print(Panel(header, title="[bold cyan]SSL/TLS Scan[/bold cyan]",
                         border_style="red" if issues else "green", box=box.ROUNDED))
     if issues:
-        console.print("[bold magenta]── Issues ──[/bold magenta]")
+        console.print("[bold cyan]── Issues ──[/bold cyan]")
         for i in issues:
             console.print(f"  [red]•[/red] {i}")
     if weak_protos:
@@ -676,7 +676,7 @@ def format_onesixtyone(parsed: dict) -> None:
         border_style="red" if communities else "green", box=box.ROUNDED,
     ))
     if communities:
-        table = Table(show_header=True, header_style="bold magenta",
+        table = Table(show_header=True, header_style="bold cyan",
                       box=box.SIMPLE_HEAVY, border_style="dim")
         table.add_column("IP", style="cyan")
         table.add_column("Community", style="bold red")
@@ -695,7 +695,7 @@ def format_dnsrecon(parsed: dict) -> None:
     axfr   = parsed.get("zone_transfer_possible", False)
     header = Text()
     header.append("  Subdomains: ", style="dim")
-    header.append(str(len(subs)), style="bold green" if subs else "yellow")
+    header.append(str(len(subs)), style="bold green" if subs else "#00b894")
     header.append("  | A records: ", style="dim")
     header.append(str(len(a_rec)), style="cyan")
     header.append("  | MX: ", style="dim")
@@ -705,7 +705,7 @@ def format_dnsrecon(parsed: dict) -> None:
     console.print(Panel(header, title="[bold cyan]DNSRecon Results[/bold cyan]",
                         border_style="red" if axfr else "cyan", box=box.ROUNDED))
     if subs:
-        table = Table(show_header=True, header_style="bold magenta",
+        table = Table(show_header=True, header_style="bold cyan",
                       box=box.SIMPLE_HEAVY, border_style="dim")
         table.add_column("Subdomain", style="bold green")
         table.add_column("IP", style="cyan")
@@ -730,13 +730,13 @@ def format_nuclei(parsed: dict) -> None:
     header.append("  🔴 Critical: ", style="dim")
     header.append(f"{critical}  ", style="bold red")
     header.append("🟡 High: ", style="dim")
-    header.append(f"{high}  ", style="bold yellow")
+    header.append(f"{high}  ", style="#55efc4")
     header.append("🔵 Medium: ", style="dim")
     header.append(f"{medium}  ", style="bold cyan")
     header.append("🟢 Low: ", style="dim")
     header.append(str(low), style="green")
 
-    border = "red" if critical > 0 else "yellow" if high > 0 else "cyan"
+    border = "red" if critical > 0 else "#00b894" if high > 0 else "cyan"
     console.print(Panel(
         header,
         title="[bold red]⚡ Nuclei Vulnerability Scan[/bold red]",
@@ -750,7 +750,7 @@ def format_nuclei(parsed: dict) -> None:
 
     SEV_COLORS = {
         "critical": "bold red",
-        "high":     "bold yellow",
+        "high":     "#55efc4",
         "medium":   "bold cyan",
         "low":      "green",
         "info":     "dim",
@@ -764,7 +764,7 @@ def format_nuclei(parsed: dict) -> None:
     }
 
     table = Table(
-        show_header=True, header_style="bold magenta",
+        show_header=True, header_style="bold cyan",
         box=box.SIMPLE_HEAVY, border_style="dim",
         show_lines=True,
     )
@@ -803,7 +803,7 @@ def format_nuclei(parsed: dict) -> None:
             if f.get("matched"):
                 console.print(f"  [cyan]URL: {f['matched']}[/cyan]")
             if f.get("cvss_score"):
-                console.print(f"  [yellow]CVSS: {f['cvss_score']}[/yellow]")
+                console.print(f"  [#00b894]CVSS: {f['cvss_score']}[/#00b894]")
             if f.get("reference"):
                 refs = f["reference"]
                 if refs:
@@ -819,7 +819,7 @@ def format_msfvenom(parsed: dict) -> None:
         console.print(Panel(
             f"[green]✓ Payload generated successfully![/green]\n\n"
             f"[dim]Saved to:[/dim] [cyan]{output_file}[/cyan]\n\n"
-            f"[yellow]💡 Next steps:[/yellow]\n"
+            f"[#00b894]💡 Next steps:[/#00b894]\n"
             f"  1. Start listener: [cyan]nc -lvnp 4444[/cyan] (or use msfconsole)\n"
             f"  2. Transfer payload to target\n"
             f"  3. Execute on target\n"
@@ -848,17 +848,17 @@ def format_live_discovery(parsed: dict) -> None:
 
     console.print(f"\n[bold cyan]📡 Live Host Discovery Results[/bold cyan]")
     console.print(f"   Network: [green]{network}[/green]")
-    console.print(f"   Total hosts: [yellow]{total}[/yellow]\n")
+    console.print(f"   Total hosts: [#00b894]{total}[/#00b894]\n")
 
     if not hosts:
-        console.print("[yellow]No hosts found[/yellow]")
+        console.print("[#00b894]No hosts found[/#00b894]")
         return
 
-    table = Table(show_header=True, header_style="bold magenta", box=box.SIMPLE_HEAVY)
+    table = Table(show_header=True, header_style="bold cyan", box=box.SIMPLE_HEAVY)
     table.add_column("#", style="cyan", width=4)
     table.add_column("IP", style="green", width=16)
     table.add_column("MAC", style="dim", width=18)
-    table.add_column("OS", style="yellow", width=20)
+    table.add_column("OS", style="#00b894", width=20)
     table.add_column("Vendor", style="white", width=25)
 
     for i, h in enumerate(hosts, 1):
@@ -900,7 +900,7 @@ def format_mail_crawler(parsed: dict) -> None:
 
     if emails:
         # Create a nice table
-        table = Table(show_header=True, header_style="bold magenta",
+        table = Table(show_header=True, header_style="bold cyan",
                       box=box.SIMPLE_HEAVY, border_style="dim")
         table.add_column("#", width=4, style="dim")
         table.add_column("Email", style="bold green")
@@ -924,7 +924,7 @@ def format_mail_crawler(parsed: dict) -> None:
             box=box.ROUNDED
         ))
     else:
-        console.print("[yellow]No emails found[/yellow]")
+        console.print("[#00b894]No emails found[/#00b894]")
 
     console.print()
 

@@ -81,7 +81,7 @@ def pick_wordlist(tool_name: str = "ffuf") -> str:
 
     table = Table(
         show_header=True,
-        header_style="bold magenta",
+        header_style="bold cyan",
         box=box.SIMPLE_HEAVY,
         border_style="dim",
     )
@@ -120,7 +120,7 @@ def pick_wordlist(tool_name: str = "ffuf") -> str:
     console.print("  [green]c[/green] – Enter a custom wordlist path\n")
 
     if not available:
-        console.print("[yellow]⚠ No default wordlists found. Enter a custom path.[/yellow]")
+        console.print("[cyan]⚠ No default wordlists found. Enter a custom path.[/cyan]")
         return _ask_custom_path()
 
     choice = Prompt.ask(
@@ -149,5 +149,5 @@ def _ask_custom_path() -> str:
         if retry == "n":
             # Fall back to dirb common
             fallback = "/usr/share/wordlists/dirb/common.txt"
-            console.print(f"[yellow]Using fallback: {fallback}[/yellow]")
+            console.print(f"[cyan]Using fallback: {fallback}[/cyan]")
             return fallback

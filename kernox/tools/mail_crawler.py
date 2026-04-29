@@ -136,7 +136,7 @@ class MailCrawlerTool:
                             
         except KeyboardInterrupt:
             interrupted = True
-            console.print(f"\n[yellow]⚠ Crawl interrupted by user after {self._total_pages} pages[/yellow]")
+            console.print(f"\n[cyan]⚠ Crawl interrupted by user after {self._total_pages} pages[/cyan]")
         
         # Show results after completion or interruption
         console.print(f"\n[bold cyan]📊 Crawl Results:[/bold cyan]")
@@ -144,7 +144,7 @@ class MailCrawlerTool:
         console.print(f"  • Unique emails: {len(self._found_emails)}")
         
         if interrupted:
-            console.print(f"[yellow]  • Status: INTERRUPTED (partial results)[/yellow]")
+            console.print(f"[cyan]  • Status: INTERRUPTED (partial results)[/cyan]")
         else:
             console.print(f"[green]  • Status: COMPLETED[/green]")
         
@@ -154,7 +154,7 @@ class MailCrawlerTool:
                 console.print(f"  {i}. [green]{email}[/green]")
         
         # Ask if user wants to save results
-        if self._found_emails and Confirm.ask("\n[bold yellow]Save results to file?[/bold yellow]", default=True):
+        if self._found_emails and Confirm.ask("\n[bold cyan]Save results to file?[/bold cyan]", default=True):
             from datetime import datetime
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"/tmp/emails_{target_url.replace('https://', '').replace('http://', '').replace('/', '_')}_{timestamp}.txt"

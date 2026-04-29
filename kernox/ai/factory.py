@@ -25,8 +25,8 @@ def build_ai_client(config: ConfigStore) -> BaseAIClient:
         client = OllamaClient(base_url=url, model=model)
         if not client.is_available():
             console.print(
-                f"[yellow]⚠ Ollama is not reachable at {url}. "
-                "Responses will fail until it is started.[/yellow]"
+                f"[cyan]⚠ Ollama is not reachable at {url}. "
+                "Responses will fail until it is started.[/cyan]"
             )
         return client
 
@@ -34,7 +34,7 @@ def build_ai_client(config: ConfigStore) -> BaseAIClient:
         from kernox.ai.api import ClaudeClient
         api_key = ks.retrieve("claude_api_key") or ""
         if not api_key:
-            console.print("[yellow]⚠ No Claude API key found. Run `kernox --config` to set it.[/yellow]")
+            console.print("[cyan]⚠ No Claude API key found. Run `kernox --config` to set it.[/cyan]")
         model = config.get("claude_model") or ClaudeClient.DEFAULT_MODEL
         return ClaudeClient(api_key=api_key, model=model)
 
@@ -42,7 +42,7 @@ def build_ai_client(config: ConfigStore) -> BaseAIClient:
         from kernox.ai.api import OpenAICompatibleClient
         api_key = ks.retrieve("openai_api_key") or ""
         if not api_key:
-            console.print("[yellow]⚠ No OpenAI API key found. Run `kernox --config` to set it.[/yellow]")
+            console.print("[cyan]⚠ No OpenAI API key found. Run `kernox --config` to set it.[/cyan]")
         base_url = config.get("openai_base_url") or "https://api.openai.com/v1"
         model = config.get("openai_model") or "gpt-4o"
         return OpenAICompatibleClient(api_key=api_key, base_url=base_url, model=model)
@@ -51,7 +51,7 @@ def build_ai_client(config: ConfigStore) -> BaseAIClient:
         from kernox.ai.api import GeminiClient
         api_key = ks.retrieve("gemini_api_key") or ""
         if not api_key:
-            console.print("[yellow]⚠ No Gemini API key found. Run `kernox --config` to set it.[/yellow]")
+            console.print("[cyan]⚠ No Gemini API key found. Run `kernox --config` to set it.[/cyan]")
         model = config.get("gemini_model") or GeminiClient.DEFAULT_MODEL
         return GeminiClient(api_key=api_key, model=model)
 

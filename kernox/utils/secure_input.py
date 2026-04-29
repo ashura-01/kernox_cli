@@ -21,9 +21,9 @@ def secure_prompt(prompt: str, *, allow_empty: bool = True) -> Optional[str]:
     try:
         value = getpass.getpass(f"{prompt}: ")
         if not value and not allow_empty:
-            console.print("[yellow]No value entered.[/yellow]")
+            console.print("[cyan]No value entered.[/cyan]")
             return None
         return value or None
     except (KeyboardInterrupt, EOFError):
-        console.print("\n[yellow]Input cancelled.[/yellow]")
+        console.print("\n[cyan]Input cancelled.[/cyan]")
         return None

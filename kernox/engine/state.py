@@ -53,6 +53,7 @@ class SessionState:
 
     def __init__(self) -> None:
         self.reset()
+        self._metadata = {}
 
     def reset(self) -> None:
         self._hosts: dict[str, HostInfo] = {}          # ip → HostInfo
@@ -154,6 +155,11 @@ class SessionState:
             return [r for r in self._tool_results if r.tool == tool]
         return self._tool_results
 
+    @property
+    def tool_results(self) -> list[ToolResult]:
+        """Public accessor for tool results."""
+        return self._tool_results
+
     # ── AI Insights ──────────────────────────────────────────────────────────
 
     def add_ai_insight(self, vulnerability: str, severity: str, tool: str,
@@ -172,6 +178,11 @@ class SessionState:
         """Get AI insights, optionally filtered by severity."""
         if severity:
             return [i for i in self._ai_insights if i.severity.lower() == severity.lower()]
+        return self._ai_insights
+
+    @property
+    def ai_insights(self) -> list[AIInsight]:
+        """Public accessor for AI insights."""
         return self._ai_insights
 
     # ── Hosts ────────────────────────────────────────────────────────────────
@@ -228,6 +239,10 @@ class SessionState:
 
     def add_note(self, note: str) -> None:
         self._notes.append(note)
+
+    @property
+    def notes(self) -> list[str]:
+        return self._notes
 
     # ── Serialisation ────────────────────────────────────────────────────────
 

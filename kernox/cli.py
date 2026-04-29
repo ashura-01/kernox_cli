@@ -40,7 +40,7 @@ def check_python_deps() -> None:
 
     if missing:
         console.print(
-            f"\n[bold yellow]⚠ Missing Python packages:[/bold yellow] "
+            f"\n[bold cyan]⚠ Missing Python packages:[/bold cyan] "
             f"{', '.join(missing)}\n"
             f"[dim]Install with:[/dim] "
             f"[cyan]pip install {' '.join(missing)} --break-system-packages[/cyan]\n"
@@ -141,13 +141,13 @@ def main() -> None:
         try:
             orchestrator.run_headless(target=args.target, mode=args.mode)
         except KeyboardInterrupt:
-            console.print("\n\n[yellow]Headless session ended.[/yellow]")
+            console.print("\n\n[cyan]Headless session ended.[/cyan]")
             sys.exit(0)
         return
 
     # ── First-run detection ─────────────────────────────────────────────────
     if is_first_run():
-        console.print("\n[yellow]Welcome to Kernox! Let's get you set up.[/yellow]\n")
+        console.print("\n[cyan]Welcome to Kernox! Let's get you set up.[/cyan]\n")
         run_first_time_setup()
 
     # ── Main interactive loop ───────────────────────────────────────────────
@@ -162,7 +162,7 @@ def main() -> None:
     try:
         orchestrator.run()
     except KeyboardInterrupt:
-        console.print("\n\n[yellow]Session ended. Stay ethical.[/yellow]")
+        console.print("\n\n[cyan]Session ended. Stay ethical.[/cyan]")
         sys.exit(0)
 
 
