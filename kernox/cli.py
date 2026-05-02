@@ -1,15 +1,20 @@
 """
-kernox.cli  –  Main entry point for the `kernox` command.
+kernox.cli — Main entry point.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
+from rich.columns import Columns
+from rich.align import Align
+from rich import box
+from rich.table import Table
 
 from kernox.core.first_run import is_first_run
 from kernox.core.first_run_setup import run_first_time_setup
@@ -19,98 +24,82 @@ from kernox.config.config_store import ConfigStore
 
 console = Console()
 
-# Python packages required by Kernox
 REQUIRED_PACKAGES = {
-    "rich":           "rich",
+    "rich": "rich",
     "prompt_toolkit": "prompt_toolkit",
-    "requests":       "requests",
-    "cryptography":   "cryptography",
-    "reportlab":      "reportlab",
+    "requests": "requests",
+    "cryptography": "cryptography",
+    "reportlab": "reportlab",
 }
 
+VERSION = "1.0.0"
 
-def check_python_deps() -> None:
-    """Check required Python packages and warn if missing."""
-    missing = []
-    for pkg, install_name in REQUIRED_PACKAGES.items():
-        try:
-            __import__(pkg)
-        except ImportError:
-            missing.append(install_name)
-
-    if missing:
-        console.print(
-            f"\n[bold cyan]⚠ Missing Python packages:[/bold cyan] "
-            f"{', '.join(missing)}\n"
-            f"[dim]Install with:[/dim] "
-            f"[cyan]pip install {' '.join(missing)} --break-system-packages[/cyan]\n"
-        )
-
-
-BANNER = r"""
-██ ▄█▀▓█████  ██▀███   ███▄    █  ▒█████  ▒██   ██▒
-██▄█▒ ▓█   ▀ ▓██ ▒ ██▒ ██ ▀█   █ ▒██▒  ██▒▒▒ █ █ ▒░
-▓███▄░ ▒███   ▓██ ░▄█ ▒▓██  ▀█ ██▒▒██░  ██▒░░  █   ░
-▓██ █▄ ▒▓█  ▄ ▒██▀▀█▄  ▓██▒  ▐▌██▒▒██   ██░ ░ █ █ ▒
-▒██▒ █▄░▒████▒░██▓ ▒██▒▒██░   ▓██░░ ████▓▒░▒██▒ ▒██▒
-▒ ▒▒ ▓▒░░ ▒░ ░░ ▒▓ ░▒▓░░ ▒░   ▒ ▒ ░ ▒░▒░▒░ ▒▒ ░ ░▓ ░
-░ ░▒ ▒░ ░ ░  ░  ░▒ ░ ▒░░ ░░   ░ ▒░  ░ ▒ ▒░ ░░   ░▒ ░
-░ ░░ ░    ░     ░░   ░    ░   ░ ░ ░ ░ ░ ▒   ░    ░
-░  ░      ░  ░   ░              ░     ░ ░   ░    ░
-         >>> K E R N O X <<<
+BANNER = """\
+ ██ ▄█▀▓█████  ██▀███   ███▄    █  ▒█████  ▒██   ██▒
+ ██▄█▒ ▓█   ▀ ▓██ ▒ ██▒ ██ ▀█   █ ▒██▒  ██▒▒▒ █ █ ▒░
+ ▓███▄░ ▒███   ▓██ ░▄█ ▒▓██  ▀█ ██▒▒██░  ██▒░░  █   ░
+ ▓██ █▄ ▒▓█  ▄ ▒██▀▀█▄  ▓██▒  ▐▌██▒▒██   ██░ ░ █ █ ▒
+ ▒██▒ █▄░▒████▒░██▓ ▒██▒▒██░   ▓██░░ ████▓▒░▒██▒ ▒██▒
+ ▒ ▒▒ ▓▒░░ ▒░ ░░ ▒▓ ░▒▓░░ ▒░   ▒ ▒ ░ ▒░▒░▒░ ▒▒ ░ ░▓ ░
+ ░ ░▒ ▒░ ░ ░  ░  ░▒ ░ ▒░░ ░░   ░ ▒░  ░ ▒ ▒░ ░░   ░▒ ░
+ ░ ░░ ░    ░     ░░   ░    ░   ░ ░ ░ ░ ░ ▒   ░    ░
+ ░  ░      ░  ░   ░              ░     ░ ░   ░    ░\
 """
 
 
 def print_banner() -> None:
-    console.print(Text(BANNER, style="bold green"))
-    console.print(
-        Panel(
-            "[bold cyan]AI-Powered Security Automation CLI[/bold cyan]\n"
-            "[dim]For authorized penetration testing and ethical hacking only.[/dim]",
-            border_style="green",
-            expand=False,
-        )
+    console.print()
+    console.print(Align(Text(BANNER, style="bold cyan"), align="center"))
+    console.print()
+
+    # Info row
+    t = Table.grid(padding=(0, 3))
+    t.add_column(style="dim")
+    t.add_column(style="dim")
+    t.add_column(style="dim")
+    t.add_row(
+        f"[cyan]v{VERSION}[/cyan]",
+        "[#00b894]AI Penetration Testing Agent[/#00b894]",
+        f"[dim]{datetime.now().strftime('%Y-%m-%d')}[/dim]",
     )
+    console.print(Align(t, align="left"))
+    console.print(
+        "\n[dim]Type a target (IP/URL), ask a question, or type[/dim] "
+        "[cyan]help[/cyan] [dim]for all commands[/dim]\n"
+    )
+
+
+def check_python_deps() -> None:
+    missing = [n for p, n in REQUIRED_PACKAGES.items() if not _can_import(p)]
+    if missing:
+        console.print(
+            f"[bold cyan]⚠  Missing packages:[/bold cyan] {', '.join(missing)}\n"
+            f"   [dim]pip install {' '.join(missing)} --break-system-packages[/dim]\n"
+        )
+
+
+def _can_import(pkg: str) -> bool:
+    try:
+        __import__(pkg)
+        return True
+    except ImportError:
+        return False
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="kernox",
-        description="Kernox – AI-Powered Security Automation CLI",
+        description="Kernox — AI-Powered Penetration Testing CLI",
     )
-    parser.add_argument(
-        "--config",
-        action="store_true",
-        help="Open the interactive configuration menu.",
-    )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version="%(prog)s 0.2.0",
-    )
-    parser.add_argument(
-        "--reset",
-        action="store_true",
-        help="Reset all Kernox configuration and start fresh.",
-    )
-    # ── Headless / scripting flags ────────────────────────────────────────────
-    parser.add_argument(
-        "--target",
-        metavar="TARGET",
-        help=(
-            "Run non-interactively against TARGET (IP, URL, or domain). "
-            "Use with --mode to specify the action."
-        ),
-    )
+    parser.add_argument("--config", action="store_true", help="Open configuration menu")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
+    parser.add_argument("--reset", action="store_true", help="Reset all configuration")
+    parser.add_argument("--target", metavar="TARGET", help="Headless mode target")
     parser.add_argument(
         "--mode",
         metavar="MODE",
         default="web recon",
-        help=(
-            "Action to perform in headless mode (default: 'web recon'). "
-            "Examples: 'web recon', 'scan', 'full recon'. "
-            "Any natural-language command accepted by the REPL works here."
-        ),
+        help="Headless mode action (default: 'web recon')",
     )
     return parser
 
@@ -120,49 +109,37 @@ def main() -> None:
     args = parser.parse_args()
 
     print_banner()
-
-    # ── Check Python dependencies ────────────────────────────────────────────
     check_python_deps()
 
-    # ── Reset flag ──────────────────────────────────────────────────────────
     if args.reset:
         _handle_reset()
         return
 
-    # ── Config flag ─────────────────────────────────────────────────────────
     if args.config:
         open_config_menu()
         return
 
-    # ── Headless / scripting mode (--target) ─────────────────────────────────
     if args.target:
         config = ConfigStore()
-        orchestrator = Orchestrator(config)
+        orch = Orchestrator(config)
         try:
-            orchestrator.run_headless(target=args.target, mode=args.mode)
+            orch.run_headless(target=args.target, mode=args.mode)
         except KeyboardInterrupt:
-            console.print("\n\n[cyan]Headless session ended.[/cyan]")
+            console.print("\n[cyan]Session ended.[/cyan]")
             sys.exit(0)
         return
 
-    # ── First-run detection ─────────────────────────────────────────────────
     if is_first_run():
-        console.print("\n[cyan]Welcome to Kernox! Let's get you set up.[/cyan]\n")
+        console.print("[cyan]Welcome to Kernox![/cyan] Let's configure it first.\n")
         run_first_time_setup()
 
-    # ── Main interactive loop ───────────────────────────────────────────────
     config = ConfigStore()
-    orchestrator = Orchestrator(config)
-
-    console.print(
-        "\n[bold green]System ready.[/bold green] Type [bold]help[/bold] for commands, "
-        "[bold]exit[/bold] to quit.\n"
-    )
+    orch = Orchestrator(config)
 
     try:
-        orchestrator.run()
+        orch.run()
     except KeyboardInterrupt:
-        console.print("\n\n[cyan]Session ended. Stay ethical.[/cyan]")
+        console.print("\n[cyan]Session ended. Stay ethical.[/cyan]")
         sys.exit(0)
 
 
@@ -170,11 +147,11 @@ def _handle_reset() -> None:
     from kernox.config.config_store import ConfigStore
     from kernox.security.key_store import KeyStore
 
-    console.print("\n[bold red]Resetting Kernox configuration...[/bold red]")
+    console.print("\n[bold red]Resetting Kernox...[/bold red]")
     try:
         ConfigStore().reset()
         KeyStore().reset()
-        console.print("[green]✓ Configuration reset. Run `kernox` to set up again.[/green]")
+        console.print("[green]✓ Done. Run `kernox` to set up again.[/green]")
     except Exception as exc:
         console.print(f"[red]Reset failed: {exc}[/red]")
 

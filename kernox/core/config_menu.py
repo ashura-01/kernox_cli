@@ -32,9 +32,11 @@ def open_config_menu() -> None:
         console.print("  [green]5[/green] – Toggle raw output (show/hide tool output)")
         console.print("  [green]6[/green] – Show stored key names")
         console.print("  [green]7[/green] – Delete a stored key")
+        console.print("  [green]8[/green] – Update NVD API key  [dim](CVE enrichment)[/dim]")
+        console.print("  [green]9[/green] – Update VirusTotal API key")
         console.print("  [green]q[/green] – Quit config menu\n")
 
-        choice = Prompt.ask("Select option", choices=["1", "2", "3", "4", "5", "6", "7", "q"])
+        choice = Prompt.ask("Select option", choices=["1","2","3","4","5","6","7","8","9","q"])
 
         if choice == "q":
             console.print("[dim cyan]Exiting config menu.[/dim cyan]")
@@ -53,6 +55,10 @@ def open_config_menu() -> None:
             _show_key_names(ks)
         elif choice == "7":
             _delete_key(ks)
+        elif choice == "8":
+            _update_enrichment_key(ks, "nvd_api_key", "NVD (nvd.nist.gov)")
+        elif choice == "9":
+            _update_enrichment_key(ks, "virustotal_api_key", "VirusTotal")
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -148,3 +154,15 @@ def _delete_key(ks: KeyStore) -> None:
     name = Prompt.ask("Key name to delete", choices=names)
     ks.delete(name)
     console.print(f"[green]✓ Key '{name}' deleted.[/green]\n")
+
+
+def _update_enrichment_key(ks: KeyStore, key_name: str, label: str) -> None:
+    existing = ks.retrieve(key_name)
+    status = "[green]set[/green]" if existing else "[dim]not set[/dim]"
+    console.print(f"\n  {label} key currently: {status}")
+    new_key = secure_prompt(f"New {label} API key (hidden, Enter to cancel)")
+    if new_key:
+        ks.store(key_name, new_key)
+        console.print(f"[green]✓ {label} key updated.[/green]\n")
+    else:
+        console.print("[dim cyan]Unchanged.[/dim cyan]\n")

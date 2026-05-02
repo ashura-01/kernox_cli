@@ -106,6 +106,27 @@ def run_first_time_setup() -> None:
 
     console.print("[green]✓[/green] Safety settings saved.\n")
 
+    # ── 4. Enrichment API keys (optional) ────────────────────────────────────
+    console.print("[bold]Optional:[/bold] Enrichment API keys\n")
+    console.print(
+        "  [dim]These add CVE lookups and threat intel to every finding.[/dim]\n"
+        "  [dim]Skip by pressing Enter — can be added later via `kernox --config`.[/dim]\n"
+    )
+
+    nvd_key = secure_prompt("NVD API key (nvd.nist.gov — free, input hidden, Enter to skip)")
+    if nvd_key:
+        ks.store("nvd_api_key", nvd_key)
+        console.print("[green]✓[/green] NVD key saved (50 req/30s rate limit unlocked)\n")
+    else:
+        console.print("[dim]Skipped — CVE lookup will use anonymous tier (5 req/30s)[/dim]\n")
+
+    vt_key = secure_prompt("VirusTotal API key (virustotal.com — free tier, input hidden, Enter to skip)")
+    if vt_key:
+        ks.store("virustotal_api_key", vt_key)
+        console.print("[green]✓[/green] VirusTotal key saved\n")
+    else:
+        console.print("[dim]Skipped — VirusTotal lookups disabled[/dim]\n")
+
     # ── Finalise ─────────────────────────────────────────────────────────────
     mark_setup_complete()
     console.rule("[bold green]Setup Complete[/bold green]")
