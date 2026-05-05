@@ -46,7 +46,7 @@ BANNER = """\
 
 def print_banner() -> None:
     console.print()
-    console.print(Align(Text(BANNER, style="bold cyan"), align="center"))
+    console.print(Align(Text(BANNER, style="bold cyan"), align="left"))
     console.print()
 
     # Info row
@@ -56,12 +56,12 @@ def print_banner() -> None:
     t.add_column(style="dim")
     t.add_row(
         f"[cyan]v{VERSION}[/cyan]",
-        "[#00b894]AI Penetration Testing Agent[/#00b894]",
-        f"[dim]{datetime.now().strftime('%Y-%m-%d')}[/dim]",
+        "[#00b894]    AI Penetration Testing Agent[/#00b894]",
+        f"[dim]    {datetime.now().strftime('%Y-%m-%d')}[/dim]",
     )
     console.print(Align(t, align="left"))
     console.print(
-        "\n[dim]Type a target (IP/URL), ask a question, or type[/dim] "
+        "[dim]Type a target (IP/URL), ask a question, or type[/dim] "
         "[cyan]help[/cyan] [dim]for all commands[/dim]\n"
     )
 

@@ -116,12 +116,6 @@ class Orchestrator:
         self._feature_handler = FeatureHandler(self._state, self._cmd_executor._executor)
 
     def run(self) -> None:
-        console.print(
-            "\n [bold cyan]kernox[/bold cyan] [dim]·[/dim] "
-            "[#00b894]AI Penetration Testing Agent[/#00b894]\n"
-            " [dim]Type a target (IP/URL), ask a question, or type[/dim] "
-            "[cyan]help[/cyan] [dim]for all commands[/dim]\n"
-        )
         session = PromptSession(style=PROMPT_STYLE)
 
         while True:
