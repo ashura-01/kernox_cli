@@ -35,109 +35,101 @@ from kernox.core.orchestrator_helpers import (
     ReportHandler,
     FeatureHandler,
 )
+from kernox.core.orchestrator_helpers.chat_handler import detect_builtin
 
 console = Console()
 PROMPT_STYLE = Style.from_dict({"prompt": "bold cyan"})
 
 # ── Intensity levels ──────────────────────────────────────────────────────────
 INTENSITY_LEVELS = {
-    "1": {"name": "STEALTH", "timeout": 300},
-    "2": {"name": "NORMAL", "timeout": 120},
-    "3": {"name": "AGGRESSIVE", "timeout": 60},
-    "4": {"name": "FULL", "timeout": 30},
+    "1": {"name": "STEALTH",    "timeout": 600},
+    "2": {"name": "NORMAL",     "timeout": 300},
+    "3": {"name": "AGGRESSIVE", "timeout": 180},
+    "4": {"name": "FULL",       "timeout": 120},
+}
+
+MODE_NUMBERS = {
+    "STEALTH": "1",
+    "NORMAL": "2",
+    "AGGRESSIVE": "3",
+    "FULL": "4",
 }
 
 INTENSITY_KEYWORDS = {
-    "stealth": "1",
-    "slow": "1",
-    "quiet": "1",
-    "passive": "1",
-    "evasive": "1",
-    "normal": "2",
-    "standard": "2",
-    "default": "2",
-    "aggressive": "3",
-    "fast": "3",
-    "quick": "3",
-    "full": "4",
-    "maximum": "4",
-    "max": "4",
-    "insane": "4",
+    "stealth": "1", "slow": "1", "quiet": "1", "passive": "1", "evasive": "1",
+    "normal": "2", "standard": "2", "default": "2",
+    "aggressive": "3", "fast": "3", "quick": "3",
+    "full": "4", "maximum": "4", "max": "4", "insane": "4",
 }
 
-# Intensity → single timing token, not a paragraph
 INTENSITY_TIMING = {
-    "STEALTH": "T0,delay=2s,maxrate=5,passive",
-    "NORMAL": "T3,defaults",
+    "STEALTH":    "T0,delay=2s,maxrate=5,passive",
+    "NORMAL":     "T3,defaults",
     "AGGRESSIVE": "T4,threads=high",
-    "FULL": "T5,minrate=5000,all-scripts",
+    "FULL":       "T5,minrate=5000,all-scripts",
 }
 
-# Tight system prompt — ~120 tokens vs old 800 tokens.
-# No tool lists (AI already knows Kali). No patching. Attacker mindset only.
-# Memory + mode injected as compact single lines.
 BASE_SYSTEM_PROMPT = """You are Kernox — autonomous offensive security agent on Kali Linux.
-MODE:{intensity_name} TIMING:{timing}
+MODE NUMBER:{mode_number} MODE NAME:{intensity_name} TIMING:{timing}
 {memory}
 Return ONLY this JSON (no markdown, no extra text):
-{{"is_chat":false,"analysis":"one sentence","steps":[{{"tool":"shell","args":{{"command":"full exact command here","target":"ip or hostname"}},"reason":"why"}}],"message":"one sentence"}}
+{{"is_chat":false,"analysis":"one sentence","steps":[{{"tool":"shell","args":{{"command":"full exact command","target":"ip or hostname"}},"reason":"why"}}],"message":"one sentence"}}
 
-CRITICAL RULES:
-- "tool" field MUST always be "shell" — never put a tool name like "nmap" there
-- "command" must be the complete runnable command e.g. "nmap -sV -p- 192.168.0.1"
-- For URLs extract the hostname: https://example.com → use example.com as target
-- For web targets always chain: whois + dig + nslookup + nmap + whatweb
-- msfconsole: suggest as command e.g. msfconsole -q -x "use exploit/...; set RHOSTS x; run"
-- msfvenom: output always to /tmp/kernox/payload.elf
-- NO shell operators: ; && || | > >>
-- NO sudo prefix (auto-applied)
-- NEVER suggest patching or hardening
-- is_chat:true + steps:[] only for greetings/pure questions"""
+RULES:
+- "tool" MUST always be "shell" — never put a binary name there
+- "command" = complete runnable command e.g. "nmap -sV -p- 192.168.0.1"
+- For URLs strip protocol: https://example.com → target=example.com
+- For web recon chain steps: whois, dig, nmap, whatweb, nikto
+- Multiple steps allowed — return all in steps array
+- msfconsole: "msfconsole -q -x 'use exploit/X; set RHOSTS T; run'"
+- msfvenom: output to /tmp/kernox/
+- NO shell operators ; && || | > >> (except inside single-quoted -x args)
+- NO sudo prefix — kernox adds it automatically
+- NEVER suggest patching, hardening, or remediation
+- is_chat:true + steps:[] for greetings or pure questions only
+- Do NOT suggest report/pdf/export — that is handled by the user separately"""
 
 
 class Orchestrator:
     def __init__(self, config: ConfigStore) -> None:
         self._cfg = config
-        self._ai = build_ai_client(config)
-        self._state = SessionState()
+        self._ai  = build_ai_client(config)
+        self._state   = SessionState()
         self._updater = StateUpdater(self._state)
         self._history: list[dict] = []
-        self._intensity = INTENSITY_LEVELS["2"]  # default NORMAL
+        self._intensity = INTENSITY_LEVELS["2"]
 
         self._mail_crawler = MailCrawlerTool()
 
-        # Helpers
-        self._chat_handler = ChatHandler(self._ai, self._state, self._history)
-        self._cmd_executor = CommandExecutor(config, self._state)
-        self._ai_analyzer = AIAnalyzer(self._ai, self._state, self._intensity)
+        self._chat_handler   = ChatHandler(self._ai, self._state, self._history)
+        self._cmd_executor   = CommandExecutor(config, self._state)
+        self._ai_analyzer    = AIAnalyzer(self._ai, self._state, self._intensity)
         self._cmd_executor._ai_analyzer = self._ai_analyzer
 
-        # Reflection engine — gives AI memory of what changed each step
         from kernox.core.orchestrator_helpers.reflection_engine import ReflectionEngine
-
         self._reflection = ReflectionEngine(self._ai, self._state, self._intensity)
         self._ai_analyzer.set_reflection_engine(self._reflection)
         self._cmd_executor._reflection = self._reflection
-        self._state_manager = StateManager(self._state, self._intensity)
+        self._state_manager  = StateManager(self._state, self._intensity)
         self._session_manager = SessionManager(self._state, self._updater)
-        self._report_handler = ReportHandler(self._state)
-        self._feature_handler = FeatureHandler(
-            self._state, self._cmd_executor._executor
-        )
-
-    # ── REPL ──────────────────────────────────────────────────────────────────
+        self._report_handler  = ReportHandler(self._state)
+        self._feature_handler = FeatureHandler(self._state, self._cmd_executor._executor)
 
     def run(self) -> None:
-        # Show quick-start hint on launch
- 
+        console.print(
+            "\n [bold cyan]kernox[/bold cyan] [dim]·[/dim] "
+            "[#00b894]AI Penetration Testing Agent[/#00b894]\n"
+            " [dim]Type a target (IP/URL), ask a question, or type[/dim] "
+            "[cyan]help[/cyan] [dim]for all commands[/dim]\n"
+        )
         session = PromptSession(style=PROMPT_STYLE)
 
         while True:
             try:
                 mode = self._intensity["name"]
-                # Only show mode when non-default — keeps prompt clean
-                label = f":{mode.lower()}" if mode != "NORMAL" else ""
-                raw = session.prompt(f"\n[kernsole{label}❯ ")
+                mode_num = MODE_NUMBERS.get(mode, "2")
+                label = f":{mode_num}.{mode.lower()}" if mode != "NORMAL" else ":2.normal"
+                raw = session.prompt(f"\nkernox⮞⮞ ")
             except (EOFError, KeyboardInterrupt):
                 break
 
@@ -147,50 +139,35 @@ class Orchestrator:
 
             cmd = user_input.lower()
 
-            # ── Built-in commands ─────────────────────────────────────────────
             if cmd in ("exit", "quit"):
                 console.print("\n[dim]Stay ethical.[/dim]\n")
                 break
             elif cmd == "help":
-                self._print_help()
-                continue
+                self._print_help(); continue
             elif cmd == "state":
-                self._state_manager.print_state()
-                continue
+                self._state_manager.print_state(); continue
             elif cmd == "clear":
-                self._state_manager.clear_all(self._history)
-                continue
+                self._state_manager.clear_all(self._history); continue
             elif cmd == "report":
-                self._report_handler.ask_report()
-                continue
+                self._report_handler.ask_report(); continue
             elif cmd == "save":
-                self._session_manager.save()
-                continue
+                self._session_manager.save(); continue
             elif cmd == "load":
-                self._session_manager.load()
-                continue
+                self._session_manager.load(); continue
             elif cmd == "sessions":
-                self._session_manager.list_sessions()
-                continue
+                self._session_manager.list_sessions(); continue
             elif cmd == "mode":
-                self._show_mode_picker()
-                continue
+                self._show_mode_picker(); continue
             elif cmd.startswith("cve"):
-                self._feature_handler.cve(user_input[3:].strip())
-                continue
+                self._feature_handler.cve(user_input[3:].strip()); continue
             elif cmd == "payload":
-                self._feature_handler.payload()
-                continue
+                self._feature_handler.payload(); continue
             elif cmd in ("log", "log clear"):
-                self._feature_handler.log(user_input[3:].strip())
-                continue
+                self._feature_handler.log(user_input[3:].strip()); continue
             elif cmd == "score":
-                self._feature_handler.score()
-                continue
+                self._feature_handler.score(); continue
             elif cmd.startswith("auto"):
-                # Autonomous chain from last tool output
-                self._run_autonomous(user_input[4:].strip())
-                continue
+                self._run_autonomous(user_input[4:].strip()); continue
             elif cmd in ("raw on", "raw off"):
                 val = "1" if cmd == "raw on" else "0"
                 self._cfg.set("show_raw_output", val)
@@ -198,43 +175,56 @@ class Orchestrator:
                 console.print(f"[cyan]✓ Raw output {label_s}[/cyan]")
                 continue
 
-            # ── Auto-detect intensity ────────────────────────────────────────
+            builtin = detect_builtin(user_input)
+            if builtin == "report":
+                self._report_handler.ask_report(); continue
+            elif builtin == "state":
+                self._state_manager.print_state(); continue
+            elif builtin == "score":
+                self._feature_handler.score(); continue
+            elif builtin == "log":
+                self._feature_handler.log(); continue
+            elif builtin == "save":
+                self._session_manager.save(); continue
+            elif builtin == "sessions":
+                self._session_manager.list_sessions(); continue
+            elif builtin == "payload":
+                self._feature_handler.payload(); continue
+            elif builtin == "cve":
+                self._feature_handler.cve(); continue
+            elif builtin == "mode":
+                self._show_mode_picker(); continue
+
             self._auto_detect_intensity(user_input)
-
-            # ── Route via AI ─────────────────────────────────────────────────
             self._process(user_input)
-
-    # ── Core process ─────────────────────────────────────────────────────────
 
     def _process(self, user_input: str) -> None:
         self._history.append({"role": "user", "content": user_input})
+        if len(self._history) > 30:
+            self._history = self._history[-30:]
 
         intensity_name = self._intensity["name"]
+        mode_number = MODE_NUMBERS.get(intensity_name, "2")
         timing = INTENSITY_TIMING.get(intensity_name, "T3,defaults")
 
-        # Smart memory — prioritize critical/high findings and recent tools
-        # Hard cap only after priority sorting, not before
         from kernox.core.orchestrator_helpers.context_builder import build_agent_context
-
         raw_memory = build_agent_context(self._state)
-        # Keep first 1200 chars — enough for ~6 hosts + top findings
-        # Priority ordering is done inside build_agent_context (crit/high first)
-        memory = raw_memory[:1200] if raw_memory else ""
+        memory = raw_memory[:2000] if raw_memory else ""
 
         system_prompt = BASE_SYSTEM_PROMPT.format(
+            mode_number=mode_number,
             intensity_name=intensity_name,
             timing=timing,
             memory=memory,
         )
 
         try:
-            with Live(
-                Spinner("dots", text="[cyan]Thinking...[/cyan]"), refresh_per_second=10
-            ):
+            with Live(Spinner("dots", text="[cyan]Thinking...[/cyan]"),
+                      refresh_per_second=10):
                 ai_resp = self._ai.chat(
-                    messages=self._history[-8:],  # 8 msgs vs old 20 — 60% token cut
+                    messages=self._history[-10:],
                     system=system_prompt,
-                    max_tokens=600,  # plan is short JSON — 600 is plenty
+                    max_tokens=800,
                 )
         except Exception as exc:
             console.print(f"[red]✗ AI error: {exc}[/red]")
@@ -274,14 +264,11 @@ class Orchestrator:
                 self._run_mail_crawler(args)
                 continue
 
-            # AI sometimes returns tool name directly e.g. "nmap" instead of "shell"
-            # If args has a "command" field → it's a shell step regardless of tool name
-            # If no command but tool name looks like a binary → build command from args
             if not args.get("command") and tool not in ("shell", "mail_crawler", ""):
-                # AI put tool name in "tool" field — reconstruct command
                 target = args.get("target", "")
                 flags = args.get("flags", args.get("args", ""))
-                args = {"command": f"{tool} {flags} {target}".strip(), "target": target}
+                args = {"command": f"{tool} {flags} {target}".strip(),
+                        "target": target}
 
             if args.get("command"):
                 self._cmd_executor.run_shell_step(args, reason, self._intensity)
@@ -304,21 +291,14 @@ class Orchestrator:
         else:
             console.print("[dim]No emails found.[/dim]")
 
-    # ── UI helpers ────────────────────────────────────────────────────────────
-
     def _print_plan(self, steps: list[dict]) -> None:
         if not steps:
             return
-        t = Table(
-            title="Execution Plan",
-            box=box.ROUNDED,
-            border_style="cyan",
-            header_style="bold cyan",
-            padding=(0, 1),
-        )
-        t.add_column("#", style="bold cyan", width=3)
+        t = Table(title="Execution Plan", box=box.MINIMAL,
+                  border_style="dim cyan", header_style="bold cyan", padding=(0, 1))
+        t.add_column("#",       style="bold cyan", width=3)
         t.add_column("Command", style="white", no_wrap=False)
-        t.add_column("Reason", style="dim", no_wrap=False)
+        t.add_column("Reason",  style="dim",  no_wrap=False)
         for i, s in enumerate(steps, 1):
             cmd = s.get("args", {}).get("command", "")
             reason = s.get("reason", "")
@@ -327,27 +307,22 @@ class Orchestrator:
 
     def _show_mode_picker(self) -> None:
         console.print()
-        t = Table(
-            title="Intensity Mode",
-            box=box.MINIMAL,
-            header_style="bold cyan",
-            border_style="dim cyan",
-            padding=(0, 2),
-        )
-        t.add_column("#", style="cyan", width=3)
+        t = Table(title="Intensity Mode", box=box.MINIMAL,
+                  header_style="bold cyan", border_style="dim cyan", padding=(0, 2))
+        t.add_column("#",    style="cyan",  width=3)
         t.add_column("Mode", style="white", width=12)
         t.add_column("Timeout", style="dim", width=10)
         t.add_column("Description", style="dim")
         descs = {
-            "STEALTH": "Slow, quiet — avoid IDS detection",
-            "NORMAL": "Standard speed and noise level",
+            "STEALTH":    "Slow, quiet — avoid IDS detection",
+            "NORMAL":     "Standard speed and noise level",
             "AGGRESSIVE": "Fast scans, full enumeration",
-            "FULL": "Maximum speed, all techniques",
+            "FULL":       "Maximum speed, all techniques",
         }
         for k, v in INTENSITY_LEVELS.items():
             marker = "▸ " if self._intensity["name"] == v["name"] else "  "
             t.add_row(
-                f"{marker}[{k}]",
+                f"{marker}{k}",
                 v["name"],
                 f"{v['timeout']}s",
                 descs.get(v["name"], ""),
@@ -372,10 +347,6 @@ class Orchestrator:
                 break
 
     def _run_autonomous(self, target_hint: str = "") -> None:
-        """
-        `auto [target]` — AI reflects on current state and runs an autonomous
-        chain of up to 5 steps. User confirms each execution.
-        """
         results = self._state.get_tool_results()
         if not results and not target_hint:
             console.print(
@@ -384,7 +355,6 @@ class Orchestrator:
             )
             return
 
-        # Use last tool output as starting context, or synthesize from target
         if results:
             last = results[-1]
             seed_output = last.raw_output or last.tool
@@ -396,71 +366,57 @@ class Orchestrator:
             seed_target = target_hint
 
         self._reflection.autonomous_chain(
-            initial_output=seed_output,
-            tool_name=seed_tool,
-            target=seed_target,
-            intensity=self._intensity,
-            executor=self._cmd_executor._executor,
-            max_steps=5,
+            initial_output = seed_output,
+            tool_name = seed_tool,
+            target = seed_target,
+            intensity = self._intensity,
+            executor = self._cmd_executor._executor,
+            max_steps = 5,
         )
 
     def run_headless(self, target: str, mode: str = "web recon") -> None:
-        """Non-interactive single-shot mode for --target flag."""
         console.print(f"\n[bold cyan]Headless:[/bold cyan] {mode} → {target}\n")
         self._process(f"{mode} {target}")
 
     def _print_help(self) -> None:
-        t = Table(
-            box=box.SIMPLE, show_header=False, border_style="dim cyan", padding=(0, 2)
-        )
-        t.add_column(style="bold cyan", width=22, no_wrap=True)
-        t.add_column(style="dim white", no_wrap=False)
+        t = Table(box=box.SIMPLE, show_header=False,
+                  border_style="dim cyan", padding=(0, 2))
+        t.add_column(style="bold cyan",  width=22, no_wrap=True)
+        t.add_column(style="dim white",  no_wrap=False)
 
         rows = [
-            # Navigation
-            ("help", "show this menu"),
-            ("exit / quit", "exit kernox"),
-            ("clear", "reset session state and history"),
-            # Recon & execution
-            ("mode", "pick intensity: STEALTH / NORMAL / AGGRESSIVE / FULL"),
+            ("help",             "show this menu"),
+            ("exit / quit",      "exit kernox"),
+            ("clear",            "reset session state and history"),
+            ("mode",             "pick intensity: STEALTH / NORMAL / AGGRESSIVE / FULL"),
             ("raw on / raw off", "toggle live streaming of tool output"),
-            # Agent features
-            ("auto [target]", "autonomous agent chain — AI plans & runs up to 5 steps"),
-            ("state", "show hosts, findings, web paths, tools run"),
-            ("score", "CVSS risk summary for all session findings"),
-            # CVE / intel
-            ("cve <query>", "search NIST NVD — keyword or exact CVE-ID"),
-            # Payload
-            ("payload", "interactive msfvenom payload builder"),
-            # Logging / reporting
-            ("log", "attack timeline  |  log clear — wipe it"),
-            ("report", "export findings to PDF"),
-            # Session
-            ("save", "save session to disk"),
-            ("load", "restore a saved session"),
-            ("sessions", "list all saved sessions"),
+            ("auto [target]",    "autonomous agent chain — AI plans & runs up to 5 steps"),
+            ("state",            "show hosts, findings, web paths, tools run"),
+            ("score",            "CVSS risk summary for all session findings"),
+            ("cve <query>",      "search NIST NVD — keyword or exact CVE-ID"),
+            ("payload",          "interactive msfvenom payload builder"),
+            ("log",              "attack timeline  |  log clear — wipe it"),
+            ("report",           "export findings to PDF"),
+            ("save",             "save session to disk"),
+            ("load",             "restore a saved session"),
+            ("sessions",         "list all saved sessions"),
         ]
         for cmd, desc in rows:
             t.add_row(cmd, desc)
 
-        console.print(
-            Panel(
-                t,
-                title="[bold cyan] Kernox Commands [/bold cyan]",
-                border_style="cyan",
-                box=box.ROUNDED,
-                padding=(0, 1),
-            )
-        )
+        console.print(Panel(
+            t,
+            title="[bold cyan] Kernox Commands [/bold cyan]",
+            border_style="cyan",
+            box=box.MINIMAL,
+            padding=(0, 1),
+        ))
         console.print(
             "  [dim]Any natural language works: "
-            '[cyan]"scan 192.168.0.1"[/cyan]  '
-            '[cyan]"enumerate web server at target.com"[/cyan]  '
-            '[cyan]"exploit vsftpd on 192.168.0.5"[/cyan][/dim]\n'
+            "[cyan]\"scan 192.168.0.1\"[/cyan]  "
+            "[cyan]\"enumerate web server at target.com\"[/cyan]  "
+            "[cyan]\"exploit vsftpd on 192.168.0.5\"[/cyan][/dim]\n"
         )
-
-
-# ── JSON extraction ───────────────────────────────────────────────────────────
 
 
 def _extract_json(text: str) -> Optional[dict]:
