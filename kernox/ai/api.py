@@ -82,7 +82,7 @@ class ClaudeClient(BaseAIClient):
             payload["system"] = system
 
         def _do_request():
-            resp = requests.post(self.API_URL, headers=headers, json=payload, timeout=60)
+            resp = requests.post(self.API_URL, headers=headers, json=payload, timeout=120)
             resp.raise_for_status()
             data = resp.json()
             return data["content"][0]["text"]

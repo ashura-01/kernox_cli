@@ -1,200 +1,150 @@
 """
-kernox.engine.state_parser — Auto-parse tool output into structured state.
+kernox.engine.state_parser — Universal AI-driven tool output parser.
 
-Called after every tool run. Extracts hosts, ports, paths, vulns
-from raw output and feeds them into SessionState so context_builder
-always has real structured data — not just counts.
+IMPORTANT DESIGN DECISION:
+  state_parser is now a THIN WRAPPER that delegates to ai_analyzer.
+  The ai_analyzer ALREADY sends full output to AI for vuln analysis.
+  We extract structured state (hosts/ports/paths/creds) from THAT same
+  analysis response — no second AI call.
 
-This is what makes agent memory actually useful.
+  auto_parse() is called with the ai_analyzer instance.
+  If ai_analyzer is None (e.g. PTY tools), it makes its own compact call.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from kernox.engine.state import SessionState
 
 
-# ── nmap port line ─────────────────────────────────────────────────────────────
-_NMAP_PORT_RE = re.compile(
-    r"(\d+)/(tcp|udp)\s+(open|closed|filtered)\s+(\S+)(?:\s+(.*))?$"
-)
-# nmap OS detection
-_NMAP_OS_RE = re.compile(r"OS details?:\s+(.+)$", re.IGNORECASE)
-# nmap hostname
-_NMAP_HOST_RE = re.compile(r"Nmap scan report for (?:([^\s(]+)\s+)?\(?([\d.]+)\)?")
-
-# ffuf/gobuster path line
-_PATH_RE = re.compile(
-    r"(?:/[^\s]+)\s+(?:\(Status:\s*(\d+)\))?|"
-    r'"url":\s*"([^"]+)"',
-)
-_GOBUSTER_RE = re.compile(r"(/[^\s]+)\s+\(Status:\s*(\d+)\)")
-_FFUF_LINE_RE = re.compile(r"\*\s+\w+\s+\[Status:\s*(\d+)[^\]]*\]\s+\*\s+\S+\s+(/.+)")
-
-# hydra credential
-_HYDRA_CRED_RE = re.compile(
-    r"\[(\d+)\]\[(\w+)\]\s+host:\s+(\S+)\s+login:\s+(\S+)\s+password:\s+(\S+)"
+_EXTRACT_SYSTEM = (
+    "You are a data extraction engine. Read pentesting tool output and "
+    "extract structured findings. Return ONLY valid JSON. No markdown."
 )
 
-# searchsploit
-_SPLOIT_RE = re.compile(r"(.{30,})\s+\|\s+(\S+\.(?:py|rb|c|sh|txt|php))", re.IGNORECASE)
+_EXTRACT_PROMPT = """\
+Tool: {tool}
+Target: {target}
+Output:
+{output}
+
+Return ONLY this JSON (empty arrays if nothing found):
+{{
+  "hosts": [{{"ip":"","hostname":"","os":""}}],
+  "ports": [{{"ip":"","port":0,"proto":"tcp","service":"","version":""}}],
+  "credentials": [{{"host":"","service":"","login":"","password":""}}],
+  "paths": [{{"path":"","status":0}}],
+  "findings": [{{"type":"","detail":"","severity":"info"}}]
+}}"""
 
 
-def auto_parse(tool_name: str, target: str, raw_output: str,
-               state: SessionState) -> None:
+def auto_parse(
+    tool_name:  str,
+    target:     str,
+    raw_output: str,
+    state:      SessionState,
+    ai_client=None,
+    parsed_data: dict | None = None,
+) -> None:
     """
-    Parse raw_output for tool_name and update state with structured data.
-    Always safe — exceptions are swallowed so core flow never breaks.
+    Update state with structured data from tool output.
+
+    Two modes:
+    1. parsed_data provided — ai_analyzer already parsed it, just apply to state
+       (zero extra AI calls — this is the normal path)
+    2. parsed_data=None + ai_client provided — make a compact AI call ourselves
+       (used for PTY tools where ai_analyzer doesn't run)
     """
-    if not raw_output.strip():
+    if not raw_output or not raw_output.strip():
         return
+
     try:
-        fn = _PARSERS.get(tool_name.lower().split()[0])
-        if fn:
-            fn(target, raw_output, state)
-        # Run generic path parser for any web tool
-        if tool_name.lower() in ("ffuf","gobuster","dirb","feroxbuster","dirsearch"):
-            _parse_paths(target, raw_output, state)
+        if parsed_data is not None:
+            # Fast path: use already-parsed data from ai_analyzer
+            _apply_to_state(parsed_data, target, state)
+        elif ai_client is not None:
+            # PTY path: make our own compact extraction call
+            preview = raw_output[:6000]
+            prompt  = _EXTRACT_PROMPT.format(
+                tool=tool_name, target=target, output=preview
+            )
+            response = ai_client.chat(
+                messages=[{"role": "user", "content": prompt}],
+                system=_EXTRACT_SYSTEM,
+                max_tokens=500,
+            )
+            data = _extract_json(response)
+            if data:
+                _apply_to_state(data, target, state)
     except Exception:
         pass
 
 
-# ── Per-tool parsers ──────────────────────────────────────────────────────────
+def _apply_to_state(data: dict, target: str, state: SessionState) -> None:
+    for h in data.get("hosts", []):
+        ip = (h.get("ip") or "").strip()
+        if ip:
+            state.upsert_host(
+                ip,
+                hostname=(h.get("hostname") or "").strip() or None,
+                os=(h.get("os") or "").strip() or None,
+            )
 
-def _parse_nmap(target: str, raw: str, state: SessionState) -> None:
-    current_ip   = target
-    current_host = ""
+    for p in data.get("ports", []):
+        ip   = (p.get("ip") or target).strip() or target
+        port = p.get("port")
+        if port:
+            try:
+                port = int(port)
+            except (ValueError, TypeError):
+                continue
+            if port > 0:
+                state.upsert_host(ip)
+                state.add_ports(ip, [{
+                    "port":    port,
+                    "proto":   p.get("proto", "tcp"),
+                    "service": p.get("service", ""),
+                    "version": str(p.get("version", ""))[:80],
+                }])
 
-    for line in raw.splitlines():
-        # Scan report line → extract IP + hostname
-        hm = _NMAP_HOST_RE.search(line)
-        if hm:
-            current_host = hm.group(1) or ""
-            current_ip   = hm.group(2) or target
-            state.upsert_host(current_ip, hostname=current_host)
-            continue
-
-        # OS detection
-        om = _NMAP_OS_RE.search(line)
-        if om and current_ip:
-            state.upsert_host(current_ip, os=om.group(1).strip()[:80])
-            continue
-
-        # Port line
-        pm = _NMAP_PORT_RE.match(line.strip())
-        if pm and pm.group(3) == "open" and current_ip:
-            port    = int(pm.group(1))
-            proto   = pm.group(2)
-            service = pm.group(4)
-            version = (pm.group(5) or "").strip()[:80]
-            state.add_ports(current_ip, [{
-                "port": port, "proto": proto,
-                "service": service, "version": version,
-            }])
-
-
-def _parse_ffuf(target: str, raw: str, state: SessionState) -> None:
-    # JSON output
-    if '"results"' in raw:
-        import json as _j
-        try:
-            data = _j.loads(raw)
-            findings = [
-                {"path": r.get("url",""), "status": r.get("status",0),
-                 "size": r.get("length",0)}
-                for r in data.get("results", [])
-            ]
-            if findings:
-                state.add_paths(target, findings)
-            return
-        except Exception:
-            pass
-    # Text output
-    findings = []
-    for line in raw.splitlines():
-        m = _FFUF_LINE_RE.search(line)
-        if m:
-            findings.append({"path": m.group(2).strip(), "status": int(m.group(1))})
-    if findings:
-        state.add_paths(target, findings)
-
-
-def _parse_gobuster(target: str, raw: str, state: SessionState) -> None:
-    findings = []
-    for line in raw.splitlines():
-        m = _GOBUSTER_RE.search(line)
-        if m:
-            findings.append({"path": m.group(1), "status": int(m.group(2))})
-    if findings:
-        state.add_paths(target, findings)
-
-
-def _parse_paths(target: str, raw: str, state: SessionState) -> None:
-    """Generic path parser for dirb, feroxbuster etc."""
-    findings = []
-    for line in raw.splitlines():
-        # Lines starting with a path
-        m = re.search(r'(GET|POST)?\s+(/[^\s"]+)', line)
-        if m:
-            path = m.group(2)
-            if len(path) > 1 and not path.endswith(".map"):
-                findings.append({"path": path, "status": 0})
-    if findings:
-        state.add_paths(target, findings)
-
-
-def _parse_hydra(target: str, raw: str, state: SessionState) -> None:
-    for line in raw.splitlines():
-        m = _HYDRA_CRED_RE.search(line)
-        if m:
-            state.add_vuln(target, {
+    for c in data.get("credentials", []):
+        host = (c.get("host") or target).strip() or target
+        if c.get("login") or c.get("password"):
+            state.add_vuln(host, {
                 "type":     "credential",
-                "port":     m.group(1),
-                "service":  m.group(2),
-                "login":    m.group(4),
-                "password": m.group(5),
+                "service":  c.get("service", ""),
+                "login":    c.get("login", ""),
+                "password": c.get("password", ""),
             })
 
+    paths = [p for p in data.get("paths", []) if p.get("path")]
+    if paths:
+        state.add_paths(target, [
+            {"path": p["path"], "status": p.get("status", 0)}
+            for p in paths
+        ])
 
-def _parse_searchsploit(target: str, raw: str, state: SessionState) -> None:
-    for line in raw.splitlines():
-        m = _SPLOIT_RE.search(line)
-        if m:
+    for f in data.get("findings", []):
+        if f.get("detail") or f.get("type"):
             state.add_vuln(target, {
-                "type":  "exploit",
-                "title": m.group(1).strip()[:100],
-                "path":  m.group(2).strip(),
+                "type":     f.get("type", "finding"),
+                "detail":   str(f.get("detail", ""))[:300],
+                "severity": f.get("severity", "info"),
             })
 
 
-def _parse_nikto(target: str, raw: str, state: SessionState) -> None:
-    for line in raw.splitlines():
-        if line.strip().startswith("+ ") and len(line) > 10:
-            state.add_vuln(target, {
-                "type":   "web_finding",
-                "detail": line.strip()[2:200],
-            })
-
-
-def _parse_sqlmap(target: str, raw: str, state: SessionState) -> None:
-    if "is vulnerable" in raw.lower() or "parameter" in raw.lower():
-        state.add_vuln(target, {
-            "type":   "sqli",
-            "detail": "SQLMap identified injection point",
-        })
-
-
-_PARSERS: dict = {
-    "nmap":          _parse_nmap,
-    "masscan":       _parse_nmap,   # similar output format
-    "ffuf":          _parse_ffuf,
-    "gobuster":      _parse_gobuster,
-    "dirb":          _parse_paths,
-    "feroxbuster":   _parse_paths,
-    "dirsearch":     _parse_paths,
-    "hydra":         _parse_hydra,
-    "medusa":        _parse_hydra,
-    "searchsploit":  _parse_searchsploit,
-    "nikto":         _parse_nikto,
-    "sqlmap":        _parse_sqlmap,
-}
+def _extract_json(text: str) -> dict | None:
+    text = text.strip()
+    if text.startswith("```"):
+        text = "\n".join(
+            l for l in text.split("\n")
+            if not l.strip().startswith("```")
+        ).strip()
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if not m:
+        return None
+    try:
+        return json.loads(m.group())
+    except json.JSONDecodeError:
+        return None

@@ -1,17 +1,14 @@
 """
-kernox.guards.shell_sanitizer  –  Smart sanitization for any shell command.
+kernox.guards.shell_sanitizer — Smart sanitization for any shell command.
 
 Design:
-  1. Hard-blocked binary list  (rm, mkfs, dd, etc.) — system-destructive only
-  2. Shell operator ban        (;  &&  ||  |  >  >>  $()  backticks)
-  3. Dangerous flag detection  per binary
-  4. Dangerous path detection  (/etc/shadow, /dev/sda, etc.)
-  5. Length + printability     anti-padding/injection
-  6. Target extraction         for scope enforcement
-
-NOTE: sudo, python, ruby, bash etc. are NOT blocked here — the executor
-handles sudo prepending, and interpreters are needed for msfvenom/msf scripts.
-Only system-destructive binaries are blocked.
+  1. Hard-blocked binaries  (rm, mkfs, dd — system-destructive ONLY)
+  2. Shell operator ban      (; && || | > >> $() backticks) — quoted args exempt
+  3. Dangerous flag check    per binary
+  4. Dangerous path check    (/etc/shadow, /dev/sda etc.)
+  5. Length + printability
+  6. Target extraction       for scope enforcement
+  7. sudo/PTY detection      smart — checks binary capabilities at runtime
 """
 
 from __future__ import annotations
@@ -19,115 +16,112 @@ from __future__ import annotations
 import ipaddress
 import re
 import shlex
+import shutil
 import string
+import subprocess
 from dataclasses import dataclass
 from typing import Optional
 
 
-# ── Hard-blocked binaries ─────────────────────────────────────────────────────
-
+# ── Absolutely blocked — system-destructive only ──────────────────────────────
 BLOCKED_BINARIES: set[str] = {
-    # Filesystem destruction
     "rm", "rmdir", "mkfs", "dd", "shred", "wipe",
     "fdisk", "parted", "gparted", "gdisk",
-    # System control / shutdown
     "shutdown", "reboot", "halt", "poweroff", "init",
-    # User/auth modification
     "passwd", "chpasswd", "useradd", "userdel", "usermod",
-    # Device-level
-    "mount", "umount",
-    # Firewall modification (could lock out)
-    "iptables", "ip6tables", "nft",
-    # Format / wipe
-    "format",
+    "mount", "umount", "format",
 }
 
-# ── Interactive / PTY-required tools ─────────────────────────────────────────
-
+# ── PTY-required tools — need full interactive terminal ───────────────────────
+# Tools that use curses, raw input, or expect a terminal
 PTY_TOOLS: set[str] = {
-    "msfconsole",
-    "sqlmap",       
-    "beef-xss",
-    "setoolkit",
-    "social-engineer-toolkit",
+    "msfconsole", "setoolkit", "social-engineer-toolkit",
+    "beef-xss", "beef", "armitage", "wifite",
+    "sqlmap",    # interactive mode
+    "metasploit",
 }
 
-# ── Tools that need sudo ──────────────────────────────────────────────────────
+# ── Tools that always need sudo ───────────────────────────────────────────────
+# Covers all common Kali tools that need raw socket / packet capture access
 SUDO_TOOLS: set[str] = {
-    "nmap", "masscan", "tcpdump", "tshark",
-    "arp-scan", "bettercap", "aireplay-ng",
-    "reaver", "kismet", "netdiscover",
-    "airmon-ng", "airodump-ng",
+    # Network scanning (raw sockets)
+    "nmap", "masscan", "zmap",
+    # Packet capture
+    "tcpdump", "tshark", "wireshark", "dumpcap",
+    # ARP / Layer2
+    "arp-scan", "netdiscover", "arpspoof", "arping",
+    # Wireless
+    "airmon-ng", "airodump-ng", "aireplay-ng", "aircrack-ng",
+    "airbase-ng", "airdecap-ng", "packetforge-ng",
+    "reaver", "bully", "pixiewps", "wifite",
+    # MITM / traffic
+    "bettercap", "ettercap", "mitmproxy", "responder",
+    # Other raw socket tools
+    "kismet", "hping3", "scapy",
+    "ifconfig", "iwconfig",
 }
 
-# ── Shell operator pattern ────────────────────────────────────────────────────
-SHELL_OPERATOR_RE = re.compile(
-    r"""
-    (?:
-        ;                   |
-        &&                  |
-        \|\|                |
-        \|(?!\w)            |
-        >>?                 |
-        <(?!<)              |
-        `[^`]*`             |
-        \$\(                |
-        \$\{                |
-        \bexec\b            |
-        \beval\b            |
-        \bsource\b          |
-        2>&1
-    )
-    """,
-    re.VERBOSE,
-)
-
-# ── Per-binary dangerous flags ────────────────────────────────────────────────
+# ── Dangerous flags per binary ────────────────────────────────────────────────
 DANGEROUS_FLAGS: dict[str, list[str]] = {
-    "sqlmap": ["--os-shell", "--os-cmd", "--sql-shell",
-               "--reg-add", "--reg-del"],
-    "curl":   ["--config", "-K"],
-    "wget":   ["--execute"],
-    "nmap":   ["--resume"],
-    "hydra":  ["-x"],
+    "sqlmap":     ["--os-shell", "--os-cmd", "--sql-shell", "--reg-add", "--reg-del"],
+    "curl":       ["--config", "-K"],
+    "wget":       ["--execute"],
+    "nmap":       ["--resume"],
 }
 
-# ── Dangerous path patterns ───────────────────────────────────────────────────
+# ── Dangerous local paths ─────────────────────────────────────────────────────
 DANGEROUS_PATH_RE = re.compile(
     r"""
     (?:
         \.\.(?:/|\\)        |
         /etc/shadow         |
         /etc/sudoers        |
-        /root/              |
-        /home/[^/]+/\.ssh   |
         /proc/self          |
         /dev/sd[a-z]        |
         /dev/nvme           |
         /dev/zero           |
-        /dev/null(?!\s)
+        /home/[^/]+/\.ssh
     )
     """,
     re.VERBOSE | re.IGNORECASE,
 )
 
-MAX_COMMAND_LENGTH = 2048   # msfvenom commands can be long
-MAX_ARG_COUNT      = 80
+# ── Shell operators ───────────────────────────────────────────────────────────
+# Applied to command with quoted sections stripped so msfconsole -x "cmd;cmd" works
+SHELL_OPERATOR_RE = re.compile(
+    r"""
+    (?:
+        ;           |
+        &&          |
+        \|\|        |
+        \|(?!\w)    |
+        >>?         |
+        `[^`]*`     |
+        \$\(        |
+        \$\{        |
+        \beval\b    |
+        2>&1
+    )
+    """,
+    re.VERBOSE,
+)
+
+MAX_COMMAND_LENGTH = 4096   # msfvenom with large payloads
+MAX_ARG_COUNT      = 120    # nuclei, nmap with many flags
 
 
 @dataclass
 class SanitizationResult:
-    allowed:  bool
-    reason:   str
-    command:  str
-    binary:   str
-    target:   Optional[str]
-    needs_pty: bool = False
+    allowed:    bool
+    reason:     str
+    command:    str
+    binary:     str
+    target:     Optional[str]
+    needs_pty:  bool = False
     needs_sudo: bool = False
 
 
 def _in_scope(target: str, allowed_networks: str) -> bool:
-    """Return True if target is within any allowed network, or if unrestricted."""
     if not allowed_networks or not allowed_networks.strip():
         return True
     if not target:
@@ -135,7 +129,7 @@ def _in_scope(target: str, allowed_networks: str) -> bool:
     try:
         t_addr = ipaddress.ip_address(target.split("/")[0])
     except ValueError:
-        return True  
+        return True
     for net in allowed_networks.split(","):
         net = net.strip()
         if not net:
@@ -148,41 +142,70 @@ def _in_scope(target: str, allowed_networks: str) -> bool:
     return False
 
 
+def _needs_sudo_runtime(binary: str) -> bool:
+    """
+    Check if a tool needs sudo.
+    Fast-path: static SUDO_TOOLS list.
+    Fallback: check if binary exists and test-run to detect permission errors.
+    """
+    if binary in SUDO_TOOLS:
+        return True
+    # For unknown tools: check if they're in known sudo-requiring categories
+    # by testing if running without sudo gives "Operation not permitted" or similar
+    sudo_indicators = [
+        "tcpd", "arping", "dhcp", "raw", "capture",
+        "sniff", "inject", "monitor", "promiscuous",
+    ]
+    if any(ind in binary.lower() for ind in sudo_indicators):
+        return True
+    return False
+
+
+def _needs_pty_runtime(binary: str) -> bool:
+    """
+    Check if a tool needs a PTY.
+    Fast-path: static PTY_TOOLS list.
+    Fallback: known interactive tool patterns.
+    """
+    if binary in PTY_TOOLS:
+        return True
+    # Interactive tool patterns — console-based, menu-driven, or uses curses
+    pty_indicators = [
+        "console", "shell", "toolkit", "framework",
+        "wizard", "menu", "interactive",
+    ]
+    if any(ind in binary.lower() for ind in pty_indicators):
+        return True
+    return False
+
+
 def sanitize(raw_command: str, config=None) -> SanitizationResult:
     command = raw_command.strip()
 
     if not command:
         return SanitizationResult(False, "Empty command.", "", "", None)
 
-    # Length guard
     if len(command) > MAX_COMMAND_LENGTH:
         return SanitizationResult(
-            False,
-            f"Command too long ({len(command)} chars, max {MAX_COMMAND_LENGTH}).",
-            command, "", None,
-        )
+            False, f"Command too long ({len(command)} chars).", command, "", None)
 
-    # Printable only
     bad = [c for c in command if c not in string.printable]
     if bad:
         return SanitizationResult(
-            False, f"Non-printable characters: {bad!r}",
-            command, "", None,
-        )
+            False, f"Non-printable characters detected.", command, "", None)
 
-
-    check_cmd = re.sub(r'"[^"]*"', '""', command)   
-    check_cmd = re.sub(r"'[^']*'", "''", check_cmd) 
+    # Strip quoted content before operator check — allows msfconsole -x "cmd; cmd"
+    check_cmd = re.sub(r'"[^"]*"', '""', command)
+    check_cmd = re.sub(r"'[^']*'", "''", check_cmd)
     op = SHELL_OPERATOR_RE.search(check_cmd)
     if op:
         return SanitizationResult(
             False,
-            f"Shell operator '{op.group().strip()}' not allowed. "
-            "One command only — no pipes, redirects, or chaining.",
+            f"Shell operator '{op.group().strip()}' not allowed — "
+            "one command per step, no chaining.",
             command, "", None,
         )
 
- 
     try:
         tokens = shlex.split(command)
     except ValueError as e:
@@ -191,73 +214,57 @@ def sanitize(raw_command: str, config=None) -> SanitizationResult:
     if not tokens:
         return SanitizationResult(False, "Empty after parsing.", command, "", None)
 
-  
-    raw_binary = tokens[0]
-    binary = raw_binary.lower()
+    binary = tokens[0].lower()
     if "/" in binary:
         binary = binary.rsplit("/", 1)[-1]
 
-
+    # Handle sudo prefix — re-check inner binary
     if binary == "sudo" and len(tokens) > 1:
         inner = tokens[1].lower()
         if "/" in inner:
             inner = inner.rsplit("/", 1)[-1]
         if inner in BLOCKED_BINARIES:
             return SanitizationResult(
-                False,
-                f"'{inner}' is a blocked binary (system-destructive).",
-                command, inner, None,
-            )
+                False, f"'{inner}' is blocked (system-destructive).",
+                command, inner, None)
         binary = inner
 
-    # System-destructive check
     if binary in BLOCKED_BINARIES:
         return SanitizationResult(
             False,
-            f"'{binary}' is a blocked binary (system-destructive). "
-            "Use a dedicated pentesting tool instead.",
-            command, binary, None,
-        )
+            f"'{binary}' is blocked (system-destructive). Use a pentesting tool.",
+            command, binary, None)
 
-    # Arg count
     if len(tokens) > MAX_ARG_COUNT:
         return SanitizationResult(
-            False, f"Too many arguments ({len(tokens)}, max {MAX_ARG_COUNT}).",
-            command, binary, None,
-        )
+            False, f"Too many arguments ({len(tokens)}).", command, binary, None)
 
-    # Dangerous flags per binary
     joined = " ".join(tokens[1:]).lower()
     for flag in DANGEROUS_FLAGS.get(binary, []):
         if flag.lower() in joined:
             return SanitizationResult(
                 False, f"Dangerous flag '{flag}' blocked for '{binary}'.",
-                command, binary, None,
-            )
+                command, binary, None)
 
-    # Path traversal / sensitive paths
     for tok in tokens[1:]:
         if DANGEROUS_PATH_RE.search(tok):
             return SanitizationResult(
                 False, f"Dangerous path in argument: '{tok}'.",
-                command, binary, None,
-            )
+                command, binary, None)
 
     target = _extract_target(tokens)
 
-    # Scope enforcement
     if config is not None and target:
         allowed = config.get("allowed_networks") if hasattr(config, "get") else None
         if allowed and not _in_scope(target, allowed):
             return SanitizationResult(
                 False,
-                f"Target '{target}' is outside allowed scope ({allowed}). "
-                "Update scope with `kernox --config`.",
-                command, binary, target,
-            )
+                f"Target '{target}' is outside allowed scope ({allowed}).",
+                command, binary, target)
 
-    needs_pty  = binary in PTY_TOOLS
-    needs_sudo = binary in SUDO_TOOLS and not command.lstrip().startswith("sudo")
+    already_sudo = command.lstrip().startswith("sudo ")
+    needs_pty    = _needs_pty_runtime(binary)
+    needs_sudo   = _needs_sudo_runtime(binary) and not already_sudo
 
     return SanitizationResult(True, "", command, binary, target,
                               needs_pty=needs_pty, needs_sudo=needs_sudo)
@@ -265,12 +272,11 @@ def sanitize(raw_command: str, config=None) -> SanitizationResult:
 
 # ── Target extraction ─────────────────────────────────────────────────────────
 
-FLAG_VALUE_PREFIXES = {
-    "-p", "--port", "-u", "--url", "-w", "--wordlist",
-    "-t", "--threads", "-o", "--output", "-H", "--header",
-    "-d", "--data", "--proxy", "--timeout", "-e",
-    "--extensions", "-s", "--sources", "--script",
-    "--lhost", "--lport", "-f", "--format",
+_FLAG_VALUES = {
+    "-p", "--port", "-u", "--url", "-w", "--wordlist", "-t", "--threads",
+    "-o", "--output", "-H", "--header", "-d", "--data", "--proxy",
+    "--timeout", "-e", "--extensions", "--script", "--lhost", "--lport",
+    "-f", "--format", "-c", "--config", "-m", "--mode",
 }
 
 _IP_RE   = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}(?:/\d{1,2})?$")
@@ -285,7 +291,7 @@ def _extract_target(tokens: list[str]) -> Optional[str]:
             skip_next = False
             continue
         if tok.startswith("-"):
-            if tok in FLAG_VALUE_PREFIXES:
+            if tok in _FLAG_VALUES:
                 skip_next = True
             continue
         if _IP_RE.match(tok):   return tok

@@ -15,7 +15,7 @@ console = Console()
 
 def build_ai_client(config: ConfigStore) -> BaseAIClient:
     """Instantiate and return the AI client specified in config."""
-    backend = config.get("ai_backend") or "ollama"
+    backend = config.get("ai_backend") or "claude"  # claude is safer default than ollama
     ks = KeyStore()
 
     if backend == "ollama":

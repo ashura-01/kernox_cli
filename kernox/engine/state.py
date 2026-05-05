@@ -140,11 +140,13 @@ class SessionState:
 
     def add_tool_result(self, tool: str, target: str, parsed: dict, raw_output: str = "") -> None:
         """Store complete tool result for reporting."""
+        # Cap in-memory raw output at 50KB — full output already on disk in /tmp/kernox/
+        # ai_analyzer receives full output before this cap is applied
         self._tool_results.append(ToolResult(
             tool=tool,
             target=target,
             parsed=parsed,
-            raw_output=raw_output   # full output — chunked by ai_analyzer before sending to AI
+            raw_output=raw_output[:51200] if raw_output else ""
         ))
         self.save()  # Auto-save after every tool result
 

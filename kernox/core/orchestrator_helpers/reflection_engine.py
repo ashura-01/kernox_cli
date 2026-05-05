@@ -228,13 +228,8 @@ class ReflectionEngine:
                     raw_output = result.stdout + result.stderr,
                 )
 
-            # Parse structured state
-            try:
-                from kernox.engine.state_parser import auto_parse
-                auto_parse(san.binary, san.target or current_target,
-                           result.stdout, self._state)
-            except Exception:
-                pass
+            # ai_analyzer already handles state parsing inside analyze()
+            # No separate auto_parse call needed here
 
             # Log
             try:

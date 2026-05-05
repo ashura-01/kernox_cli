@@ -125,21 +125,28 @@ def _parse_cves(raw: list[dict]) -> list[dict]:
 
 def enrich_finding(vuln_name: str, tool_name: str) -> None:
     """
-    Called automatically from ai_analyzer after each finding.
-    Shows top CVEs if found, graceful fallback message if not.
+    Non-blocking CVE enrichment — runs in background thread.
+    Never blocks the terminal waiting for NVD API.
     """
-    search = vuln_name.replace(" ", "+")[:60]
-    cves   = search_cve(search, max_results=3)
+    import threading
 
-    if cves:
-        display_cves(cves, title=f"CVEs — {vuln_name[:50]}")
-    else:
-        # No match — show honest fallback, never silent nothing
-        console.print(
-            f"  [dim]No NVD match for '{vuln_name[:50]}' — "
-            f"search manually: https://nvd.nist.gov/vuln/search?query="
-            f"{urllib.parse.quote(vuln_name[:40])}[/dim]"
-        )
+    def _fetch():
+        try:
+            search = vuln_name.replace(" ", "+")[:60]
+            cves   = search_cve(search, max_results=3)
+            if cves:
+                display_cves(cves, title=f"CVEs — {vuln_name[:50]}")
+            else:
+                console.print(
+                    f"  [dim]No NVD match for '{vuln_name[:50]}' — "
+                    f"https://nvd.nist.gov/vuln/search?query="
+                    f"{urllib.parse.quote(vuln_name[:40])}[/dim]"
+                )
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_fetch, daemon=True)
+    t.start()
 
 
 def display_cves(cves: list[dict], title: str = "CVE Results") -> None:

@@ -1,7 +1,6 @@
 """
 kernox.cli — Main entry point.
 """
-
 from __future__ import annotations
 
 import argparse
@@ -25,10 +24,8 @@ from kernox.config.config_store import ConfigStore
 console = Console()
 
 REQUIRED_PACKAGES = {
-    "rich": "rich",
-    "prompt_toolkit": "prompt_toolkit",
-    "requests": "requests",
-    "cryptography": "cryptography",
+    "rich": "rich", "prompt_toolkit": "prompt_toolkit",
+    "requests": "requests", "cryptography": "cryptography",
     "reportlab": "reportlab",
 }
 
@@ -49,7 +46,7 @@ BANNER = """\
 
 def print_banner() -> None:
     console.print()
-    console.print(Align(Text(BANNER, style="bold cyan"), align="center"))
+    console.print(Align(Text(BANNER, style="bold cyan"), align="left"))
     console.print()
 
     # Info row
@@ -59,13 +56,12 @@ def print_banner() -> None:
     t.add_column(style="dim")
     t.add_row(
         f"[cyan]v{VERSION}[/cyan]",
-        "[#00b894]AI Penetration Testing Agent[/#00b894]",
+        "[#00b894]AI-Powered Penetration Testing CLI[/#00b894]",
         f"[dim]{datetime.now().strftime('%Y-%m-%d')}[/dim]",
     )
     console.print(Align(t, align="left"))
     console.print(
-        "\n[dim]Type a target (IP/URL), ask a question, or type[/dim] "
-        "[cyan]help[/cyan] [dim]for all commands[/dim]\n"
+        "\n [dim]For authorized penetration testing and ethical hacking only.[/dim]\n"
     )
 
 
@@ -91,37 +87,31 @@ def build_parser() -> argparse.ArgumentParser:
         prog="kernox",
         description="Kernox — AI-Powered Penetration Testing CLI",
     )
-    parser.add_argument("--config", action="store_true", help="Open configuration menu")
+    parser.add_argument("--config",  action="store_true", help="Open configuration menu")
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
-    parser.add_argument("--reset", action="store_true", help="Reset all configuration")
-    parser.add_argument("--target", metavar="TARGET", help="Headless mode target")
-    parser.add_argument(
-        "--mode",
-        metavar="MODE",
-        default="web recon",
-        help="Headless mode action (default: 'web recon')",
-    )
+    parser.add_argument("--reset",   action="store_true", help="Reset all configuration")
+    parser.add_argument("--target",  metavar="TARGET", help="Headless mode target")
+    parser.add_argument("--mode",    metavar="MODE",   default="web recon",
+                        help="Headless mode action (default: 'web recon')")
     return parser
 
 
 def main() -> None:
     parser = build_parser()
-    args = parser.parse_args()
+    args   = parser.parse_args()
 
     print_banner()
     check_python_deps()
 
     if args.reset:
-        _handle_reset()
-        return
+        _handle_reset(); return
 
     if args.config:
-        open_config_menu()
-        return
+        open_config_menu(); return
 
     if args.target:
         config = ConfigStore()
-        orch = Orchestrator(config)
+        orch   = Orchestrator(config)
         try:
             orch.run_headless(target=args.target, mode=args.mode)
         except KeyboardInterrupt:
@@ -134,7 +124,7 @@ def main() -> None:
         run_first_time_setup()
 
     config = ConfigStore()
-    orch = Orchestrator(config)
+    orch   = Orchestrator(config)
 
     try:
         orch.run()
@@ -146,7 +136,6 @@ def main() -> None:
 def _handle_reset() -> None:
     from kernox.config.config_store import ConfigStore
     from kernox.security.key_store import KeyStore
-
     console.print("\n[bold red]Resetting Kernox...[/bold red]")
     try:
         ConfigStore().reset()
