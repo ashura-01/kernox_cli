@@ -1,9 +1,7 @@
-Ah, you want the **actual ASCII banner** from your terminal added to the README. Here's the fixed README with the real banner:
 
-```markdown
 # Kernox – AI-Powered Offensive Security Agent
 
-> [!WARNING]
+> [!NOTE]
 > **For authorized penetration testing and ethical hacking only.**
 > Never run Kernox against systems you do not have explicit permission to test.
 
@@ -250,4 +248,3 @@ kernox --version          # Show version
 If you find Kernox useful, consider starring the repository and contributing.
 
 **Happy hacking — stay legal, stay ethical.**
-```
