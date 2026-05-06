@@ -71,6 +71,59 @@ def check_tool_installed(binary: str) -> tuple[bool, Optional[str]]:
     return False, f"sudo apt install {binary}"
 
 
+def _prime_sudo() -> bool:
+    # Fast path: already cached
+    check = subprocess.run(
+        ["sudo", "-n", "-v"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+    )
+    if check.returncode == 0:
+        return True
+
+    if not sys.stdin.isatty():
+        console.print(
+            "[red]✗ No TTY available — cannot prompt for sudo password.[/red]\n"
+            "[dim]  Run kernox in an interactive terminal.[/dim]"
+        )
+        return False
+
+    console.print("\n[bold cyan]🔑 sudo password required[/bold cyan]")
+
+    # Use a real subprocess with inherited stdio instead of pty.spawn.
+    # This gives sudo a proper TTY (the user's terminal) without the
+    # pty.spawn race condition and missing exit code problems.
+    try:
+        result = subprocess.run(
+            ["sudo", "-v"],
+            stdin=sys.stdin,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+    except OSError as exc:
+        console.print(f"[red]✗ Failed to invoke sudo: {exc}[/red]")
+        return False
+
+    if result.returncode != 0:
+        console.print("[red]✗ sudo authentication failed or was cancelled.[/red]")
+        return False
+
+    # Brief pause to ensure the timestamp file is flushed to disk
+    time.sleep(0.1)
+
+    # Final sanity check
+    verify = subprocess.run(
+        ["sudo", "-n", "-v"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+    )
+    if verify.returncode != 0:
+        console.print("[red]✗ sudo credentials did not persist.[/red]")
+        return False
+
+    return True
+
+
 # ── Result dataclass ──────────────────────────────────────────────────────────
 
 @dataclass
@@ -148,6 +201,17 @@ class Executor:
             else:
                 final_cmd = f"sudo {final_cmd}"
                 already_sudo = True
+
+        # ── 3b. Prime sudo credentials before non-PTY execution ──────────────
+        # subprocess.Popen has no TTY so sudo would hang waiting for a password.
+        # We use a PTY-based `sudo -v` to interactively cache the credentials
+        # first, then the real command can run non-interactively via PIPE.
+        if already_sudo and not san.needs_pty:
+            if not _prime_sudo():
+                return _blocked(
+                    command, tool_name, det_target,
+                    "sudo authentication failed or was cancelled",
+                )
 
         # ── 4. Raw output toggle ──────────────────────────────────────────────
         # Always respect the live config value — reads from SQLite each time
