@@ -88,7 +88,7 @@ def _prime_sudo() -> bool:
         )
         return False
 
-    console.print("\n[bold cyan]🔑 sudo password required[/bold cyan]")
+    console.print("\n[bold cyan] sudo password required[/bold cyan]")
 
     # Use a real subprocess with inherited stdio instead of pty.spawn.
     # This gives sudo a proper TTY (the user's terminal) without the
