@@ -25,6 +25,36 @@ def build_agent_context(state: SessionState) -> str:
     """
     parts: list[str] = []
 
+    # ── RAW OUTPUTS from recent commands (most important) ──
+    results = state.get_tool_results()
+    if results:
+        parts.append("RECENT COMMAND OUTPUTS (raw):")
+        for r in results[-5:]:  # Last 5 commands
+            parts.append(f"\n  ┌─ {r.tool} {r.target}")
+
+            # Get the actual output
+            output = None
+            if hasattr(r, 'raw_output') and r.raw_output:
+                output = r.raw_output
+            elif hasattr(r, 'output_file') and r.output_file:
+                try:
+                    with open(r.output_file, 'r') as f:
+                        output = f.read()
+                except:
+                    pass
+
+            if output:
+                # Truncate but keep structure
+                lines = output.split('\n')
+                if len(lines) > 30:
+                    output = '\n'.join(lines[:25] + ['... (truncated)'] + lines[-5:])
+                # Indent each line
+                indented = '\n'.join(f"  │ {line}" for line in output.split('\n')[:50])
+                parts.append(indented)
+            else:
+                parts.append("  │ (no output captured)")
+            parts.append("  └─")
+
     # ── Vulnerabilities — critical/high FIRST so any cap keeps them ──────────
     insights = state.get_ai_insights()
     if insights:
@@ -32,7 +62,7 @@ def build_agent_context(state: SessionState) -> str:
         high  = [i for i in insights if i.severity.lower() == "high"]
         other = [i for i in insights if i.severity.lower() not in ("critical","high")]
 
-        parts.append("VULNS:")
+        parts.append("\nVULNS:")
         for ins in (crit + high)[:8]:
             expl = ""
             if isinstance(ins.ai_explanation, dict):
@@ -47,17 +77,20 @@ def build_agent_context(state: SessionState) -> str:
     # ── Hosts — after vulns so critical findings always survive a cap ─────────
     hosts = state.hosts
     if hosts:
-        parts.append("HOSTS:")
+        parts.append("\nHOSTS:")
         for ip, h in list(hosts.items())[:8]:
-            ports_str = ", ".join(
-                f"{p['port']}/{p.get('service','?')}"
-                for p in (h.ports or [])[:10]
-            )
-            os_str = f"[{h.os}]" if h.os else ""
-            parts.append(f"  {ip}{os_str}: {ports_str or 'unknown'}")
+            # Show MAC if available and no ports
+            if hasattr(h, 'mac') and h.mac and not h.ports:
+                parts.append(f"  {ip} (MAC: {h.mac})")
+            else:
+                ports_str = ", ".join(
+                    f"{p['port']}/{p.get('service','?')}"
+                    for p in (h.ports or [])[:10]
+                )
+                os_str = f"[{h.os}]" if h.os else ""
+                parts.append(f"  {ip}{os_str}: {ports_str or 'unknown'}")
 
     # ── Tools already run ─────────────────────────────────────────────────────
-    results = state.get_tool_results()
     if results:
         # Deduplicate: show each tool+target combo once
         seen: set[str] = set()
@@ -69,21 +102,21 @@ def build_agent_context(state: SessionState) -> str:
                 tool_lines.append(f"  {r.tool} → {r.target}")
             if len(seen) >= 12:
                 break
-        parts.append(f"TOOLS ALREADY RUN ({len(results)} total):")
+        parts.append(f"\nTOOLS ALREADY RUN ({len(results)} total):")
         parts.extend(tool_lines)
 
     # ── Paths discovered ──────────────────────────────────────────────────────
     paths = state.paths
     if paths:
-        parts.append("WEB PATHS FOUND:")
+        parts.append("\nWEB PATHS FOUND:")
         for target, found in list(paths.items())[:3]:
             sample = ", ".join(f["path"] for f in found[:6])
             parts.append(f"  {target}: {sample}")
 
     # ── Reflection notes (AI's own observations) ──────────────────────────────
-    notes = [n for n in state._notes if n.startswith("[REFLECTION")]
+    notes = [n for n in state._notes if n.startswith("[REFLECTION]")]
     if notes:
-        parts.append("AI REFLECTIONS (recent):")
+        parts.append("\nAI REFLECTIONS (recent):")
         for note in notes[-5:]:   # last 5 reflections
             parts.append(f"  {note[:200]}")
 

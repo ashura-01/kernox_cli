@@ -75,38 +75,62 @@ class ChatHandler:
             return None
 
     def chat(self, question: str) -> str:
-        print(f"[DEBUG] Chat: {question}")
+        """Answer questions using AI with full context of what happened."""
 
-        # First, check if there's an extracted file (target.jpg.out)
-        extracted_content = self._get_extracted_file_content()
+        # Build context from session state and recent commands
+        context_parts = []
 
-        # Check what the user is asking for
-        question_lower = question.lower()
+        # Add recent tool outputs
+        results = self._state.get_tool_results()
+        if results:
+            recent = results[-3:]  # Last 3 tool runs
+            for r in recent:
+                context_parts.append(f"Tool: {r.tool}")
+                context_parts.append(f"Target: {r.target}")
+                if r.raw_output:
+                    # Truncate long outputs
+                    output = r.raw_output[:2000]
+                    context_parts.append(f"Output:\n{output}")
 
-        # If asking for hidden message or extracted content
-        if "hidden" in question_lower or "message" in question_lower or "extracted" in question_lower:
-            if extracted_content:
-                return f"The hidden message is: `{extracted_content}`"
-            else:
-                return "No extracted message found. Run stegseek first."
+        # Add conversation history
+        if self._history:
+            recent_history = self._history[-5:]  # Last 5 exchanges
+            for msg in recent_history:
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")[:500]
+                context_parts.append(f"[{role}]: {content}")
 
-        # If asking to cat or show the extracted file
-        if "cat" in question_lower and ("extracted" in question_lower or "out" in question_lower):
-            if extracted_content:
-                return f"**Contents of target.jpg.out:**\n```\n{extracted_content}\n```"
-            else:
-                return "File target.jpg.out not found."
+        context = "\n".join(context_parts) if context_parts else "No previous commands run yet."
 
-        # Check for stegseek log
-        log_file, log_content = self._get_stegseek_log()
-        if log_file and log_content:
-            return f"**Stegseek log file:** `{log_file.name}`\n\n```\n{log_content}\n```"
+        system_prompt = f"""You are Kernox, an AI penetration testing assistant. Answer the user's question based ONLY on the context provided.
 
-        # Fallback: show any output file
+    CONTEXT (previous commands and their outputs):
+    {context}
+
+    USER QUESTION: {question}
+
+    RULES:
+    - If the user asks for IPs or hosts, list them exactly as they appeared in tool outputs
+    - Be specific and factual - don't invent data not in context
+    - If the answer isn't in context, say "I don't see that in the previous command outputs"
+    - Keep answers concise and useful
+
+    Answer:"""
+
+        try:
+            response = self._ai.chat(
+                messages=[{"role": "user", "content": system_prompt}],
+                max_tokens=500,
+            )
+            return response
+        except Exception as e:
+            return f"Error: {e}\n\nTry being more specific about what you want to know."
+
+        # Fallback to file reading only if AI fails
         latest = self._get_latest_output_file()
         if latest:
-            content = latest.read_text(encoding='utf-8', errors='replace')
-            return f"**File:** `{latest.name}`\n\n```\n{content}\n```"
+            content = latest.read_text(encoding='utf-8', errors='replace')[:1000]
+            return f"**Last output file:** `{latest.name}`\n```\n{content}\n```"
 
         return "No output files found. Run a command first."
 

@@ -223,8 +223,8 @@ class Orchestrator:
                 self._show_mode_picker(); continue
 
             # ✅ Check if this is a question about results (BEFORE auto_detect)
-            if self._check_result_question(user_input):
-                continue
+            # if self._check_result_question(user_input):
+            #     continue
 
             self._auto_detect_intensity(user_input)
             self._process(user_input)
@@ -232,7 +232,7 @@ class Orchestrator:
     def _process(self, user_input: str) -> None:
         self._history.append({"role": "user", "content": user_input})
         if len(self._history) > 30:
-            self._history = self._history[-30:]
+            self._history = self._history
 
         intensity_name = self._intensity["name"]
         mode_number = MODE_NUMBERS.get(intensity_name, "2")
@@ -326,7 +326,7 @@ class Orchestrator:
         if not steps:
             return
         t = Table(title="Execution Plan", box=box.MINIMAL,
-                  border_style="dim cyan", padding=(0, 1))
+                  border_style="dim cyan",header_style="none", padding=(0, 1))
         t.add_column("#",       style="bold cyan", width=3)
         t.add_column("Command", style="white", no_wrap=False)
         t.add_column("Reason",  style="dim",  no_wrap=False)
