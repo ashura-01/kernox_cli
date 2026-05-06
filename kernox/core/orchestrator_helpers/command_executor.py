@@ -24,6 +24,7 @@ from rich import box
 
 from kernox.core.executor import Executor
 from kernox.guards.shell_sanitizer import sanitize
+from rich.prompt import Confirm, Prompt
 
 console = Console()
 
@@ -137,17 +138,45 @@ class CommandExecutor:
         return result.stdout if (not result.blocked and result.return_code >= 0) else None
 
     def _offer_chain(self, next_steps: list, intensity: dict, depth: int) -> None:
-        """Offer each AI-suggested next step to the user."""
-        for step in next_steps:
-            cmd    = step.get("args", {}).get("command", "")
+        """Offer AI-suggested next steps - user picks by number."""
+        if not next_steps:
+            return
+
+        console.print("\n[bold cyan]🎯 Suggested next steps:[/bold cyan]")
+
+        for i, step in enumerate(next_steps, 1):
+            cmd = step.get("args", {}).get("command", "")[:100]
             reason = step.get("reason", "")
-            if not cmd:
-                continue
-            preview = cmd[:80]
-            if Confirm.ask(
-                f"\n  [cyan]⚡ Chain:[/cyan] `{preview}` — run?",
-                default=False,
-            ):
+            console.print(f"  [cyan]{i}.[/cyan] {cmd}")
+            if reason:
+                console.print(f"     [dim]{reason}[/dim]")
+
+        console.print()
+        choice = Prompt.ask(
+            "  Run which?",
+            choices=[str(i) for i in range(1, len(next_steps) + 1)] + ["all", "none"],
+            default="none"
+        )
+
+        if choice == "none":
+            return
+        elif choice == "all":
+            for step in next_steps:
+                cmd = step.get("args", {}).get("command", "")
+                reason = step.get("reason", "")
+                if cmd:
+                    self.run_shell_step(
+                        step.get("args", {}),
+                        reason,
+                        intensity,
+                        _chain_depth=depth + 1,
+                    )
+        else:
+            idx = int(choice) - 1
+            step = next_steps[idx]
+            cmd = step.get("args", {}).get("command", "")
+            reason = step.get("reason", "")
+            if cmd:
                 self.run_shell_step(
                     step.get("args", {}),
                     reason,

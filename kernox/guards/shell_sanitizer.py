@@ -91,7 +91,6 @@ DANGEROUS_PATH_RE = re.compile(
 SHELL_OPERATOR_RE = re.compile(
     r"""
     (?:
-        ;           |
         &&          |
         \|\|        |
         \|(?!\w)    |

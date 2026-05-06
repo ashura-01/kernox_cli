@@ -124,29 +124,19 @@ def _parse_cves(raw: list[dict]) -> list[dict]:
 
 
 def enrich_finding(vuln_name: str, tool_name: str) -> None:
-    """
-    Non-blocking CVE enrichment — runs in background thread.
-    Never blocks the terminal waiting for NVD API.
-    """
-    import threading
-
-    def _fetch():
-        try:
-            search = vuln_name.replace(" ", "+")[:60]
-            cves   = search_cve(search, max_results=3)
-            if cves:
-                display_cves(cves, title=f"CVEs — {vuln_name[:50]}")
-            else:
-                console.print(
-                    f"  [dim]No NVD match for '{vuln_name[:50]}' — "
-                    f"https://nvd.nist.gov/vuln/search?query="
-                    f"{urllib.parse.quote(vuln_name[:40])}[/dim]"
-                )
-        except Exception:
-            pass
-
-    t = threading.Thread(target=_fetch, daemon=True)
-    t.start()
+    """Synchronous CVE enrichment — prints BEFORE returning."""
+    try:
+        cves = search_cve(vuln_name, max_results=3)
+        if cves:
+            display_cves(cves, title=f"CVEs — {vuln_name}")
+        else:
+            encoded_query = urllib.parse.quote(vuln_name)
+            console.print(
+                f"  [dim]No NVD match for '{vuln_name}' — "
+                f"https://nvd.nist.gov/vuln/search?query={encoded_query}[/dim]"
+            )
+    except Exception:
+        pass
 
 
 def display_cves(cves: list[dict], title: str = "CVE Results") -> None:

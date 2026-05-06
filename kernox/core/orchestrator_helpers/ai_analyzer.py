@@ -17,6 +17,7 @@ from rich.spinner import Spinner
 
 from kernox.guards.shell_sanitizer import sanitize
 from .output_formatter import OutputFormatter
+from rich.prompt import Prompt
 
 if TYPE_CHECKING:
     from .reflection_engine import ReflectionEngine
@@ -192,7 +193,6 @@ class AIAnalyzer:
                 seen_names.add(n)
                 unique_vulns.append(v)
 
-        # Deduplicate steps by command
         unique_steps = []
         seen_cmds    = set()
         for s in all_steps:
@@ -201,11 +201,9 @@ class AIAnalyzer:
                 seen_cmds.add(c)
                 unique_steps.append(s)
 
-        # Display summary + next steps
         summary = " | ".join(all_summaries) if all_summaries else ""
         OutputFormatter.format_analysis_summary(summary, unique_steps[:3])
 
-        # Display vulnerability panels + enrichment
         for vuln in unique_vulns[:10]:
             if not vuln.get("name"):
                 continue
@@ -229,7 +227,6 @@ class AIAnalyzer:
             except Exception:
                 pass
 
-        # Validate next steps through sanitizer
         valid = []
         for step in unique_steps[:3]:
             cmd = step.get("args", {}).get("command", "")
