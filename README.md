@@ -1,3 +1,5 @@
+Ah, you want the **actual ASCII banner** from your terminal added to the README. Here's the fixed README with the real banner:
+
 ```markdown
 # Kernox – AI-Powered Offensive Security Agent
 
@@ -7,6 +9,7 @@
 
 ---
 
+
 ## What is Kernox?
 
 Kernox is an autonomous AI penetration testing agent that lives in your terminal. It combines AI planning with Kali Linux security tools to automate reconnaissance, enumeration, exploitation, and post-exploitation.
@@ -14,19 +17,30 @@ Kernox is an autonomous AI penetration testing agent that lives in your terminal
 **Kernox plans, you confirm, it executes.**
 
 ```text
-$ kernox
+$ python -m kernox.cli
+
+██ ▄█▀▓█████  ██▀███   ███▄    █  ▒█████  ▒██   ██▒
+██▄█▒ ▓█   ▀ ▓██ ▒ ██▒ ██ ▀█   █ ▒██▒  ██▒▒▒ █ █ ▒░
+▓███▄░ ▒███   ▓██ ░▄█ ▒▓██  ▀█ ██▒▒██░  ██▒░░  █   ░
+▓██ █▄ ▒▓█  ▄ ▒██▀▀█▄  ▓██▒  ▐▌██▒▒██   ██░ ░ █ █ ▒ 
+▒██▒ █▄░▒████▒░██▓ ▒██▒▒██░   ▓██░░ ████▓▒░▒██▒ ▒██▒
+▒ ▒▒ ▓▒░░ ▒░ ░░ ▒▓ ░▒▓░░ ▒░   ▒ ▒ ░ ▒░▒░▒░ ▒▒ ░ ░▓ ░
+░ ░▒ ▒░ ░ ░  ░  ░▒ ░ ▒░░ ░░   ░ ▒░  ░ ▒ ▒░ ░░   ░▒ ░
+░ ░░ ░    ░     ░░   ░    ░   ░ ░ ░ ░ ░ ▒   ░    ░  
+░  ░      ░  ░   ░              ░     ░ ░   ░    ░  
+
+v1.0.0       AI Penetration Testing Agent       2026-05-06
+Type a target (IP/URL), ask a question, or type help for all commands
 
 kernox⮞⮞ scan 192.168.1.0/24
 
-┌─────────────────────────────────────────────────────────────┐
-│ Execution Plan                                               │
-├───┬────────────────────────────────────────────────┬─────────┤
-│ # │ Command                                        │ Reason  │
-├───┼────────────────────────────────────────────────┼─────────┤
+┌───┬────────────────────────────────────────────────┬─────────────┐
+│ # │ Command                                        │ Reason      │
+├───┼────────────────────────────────────────────────┼─────────────┤
 │ 1 │ nmap -sn 192.168.1.0/24                       │ Host discovery │
-│ 2 │ nmap -sV -p- 192.168.1.1                      │ Port scan │
-│ 3 │ whatweb http://192.168.1.1                    │ Web enum │
-└───┴────────────────────────────────────────────────┴─────────┘
+│ 2 │ nmap -sV -p- 192.168.1.1                      │ Port scan      │
+│ 3 │ whatweb http://192.168.1.1                    │ Web enum       │
+└───┴────────────────────────────────────────────────┴─────────────┘
 
 Execute? [y/n]: y
 ```
