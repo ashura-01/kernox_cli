@@ -38,6 +38,7 @@ class CommandExecutor:
         self._executor    = Executor(config)
         self._ai_analyzer = ai_analyzer   # injected by Orchestrator
         self._reflection  = None          # injected by Orchestrator
+        self._chat_handler = None         # injected by Orchestrator for recording
 
     def run_shell_step(
         self,
@@ -112,6 +113,24 @@ class CommandExecutor:
         except Exception:
             pass
 
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # Record output for chat handler so it can answer questions
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        if hasattr(self, '_chat_handler') and self._chat_handler:
+            # Check for output files
+            if hasattr(result, 'output_path') and result.output_path:
+                self._chat_handler.record_command(san.command, str(result.output_path))
+            else:
+                # Look for .out files (stegseek creates these)
+                import glob
+                import os
+                out_files = glob.glob("*.out")
+                if out_files:
+                    # Record the most recent .out file
+                    latest_out = max(out_files, key=os.path.getctime)
+                    self._chat_handler.record_command(san.command, latest_out)
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
         # PTY tools: analyze captured session output after they exit
         if san.needs_pty and result.stdout.strip() and self._ai_analyzer:
             console.print("\n[dim cyan]Analyzing session output...[/dim cyan]")
@@ -142,7 +161,7 @@ class CommandExecutor:
         if not next_steps:
             return
 
-        console.print("\n[bold cyan]🎯 Suggested next steps:[/bold cyan]")
+        console.print("\n[bold yellow]🎯 Suggested next steps:[/bold yellow]")
 
         for i, step in enumerate(next_steps, 1):
             cmd = step.get("args", {}).get("command", "")[:100]

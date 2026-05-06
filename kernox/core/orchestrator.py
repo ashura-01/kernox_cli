@@ -114,6 +114,39 @@ class Orchestrator:
         self._session_manager = SessionManager(self._state, self._updater)
         self._report_handler  = ReportHandler(self._state)
         self._feature_handler = FeatureHandler(self._state, self._cmd_executor._executor)
+        self._cmd_executor._chat_handler = self._chat_handler  # Link for recording
+
+    def _check_result_question(self, user_input: str) -> bool:
+        """Intercept questions about command results before normal processing"""
+        result_patterns = [
+            r"what.*found",
+            r"what.*output",
+            r"what.*file",
+            r"show.*result",
+            r"tool output",
+            r"output of the tool",
+            r"extracted",
+            r"hidden.*message",
+            r"did you find",
+            r"cat.*\.out",
+            r"what.*in the file",
+            r"what did you find",
+            r"output please",
+            r"file you found",
+            r"check.*output",
+            r"show output",
+            r"what is the output",
+            r"where.*file.*saved",
+            r"output of the tool\?",
+        ]
+
+        pattern = re.compile('|'.join(result_patterns), re.I)
+        if pattern.search(user_input):
+            print(f"[DEBUG] Intercepted: {user_input}")  # This will show in terminal
+            response = self._chat_handler.chat(user_input)
+            console.print(Panel(Markdown(response), border_style="dim cyan", title="[dim]Response[/dim]"))
+            return True
+        return False
 
     def run(self) -> None:
         session = PromptSession(style=PROMPT_STYLE)
@@ -188,6 +221,10 @@ class Orchestrator:
                 self._feature_handler.cve(); continue
             elif builtin == "mode":
                 self._show_mode_picker(); continue
+
+            # ✅ Check if this is a question about results (BEFORE auto_detect)
+            if self._check_result_question(user_input):
+                continue
 
             self._auto_detect_intensity(user_input)
             self._process(user_input)
@@ -289,7 +326,7 @@ class Orchestrator:
         if not steps:
             return
         t = Table(title="Execution Plan", box=box.MINIMAL,
-                  border_style="dim cyan", header_style="bold cyan", padding=(0, 1))
+                  border_style="dim cyan", padding=(0, 1))
         t.add_column("#",       style="bold cyan", width=3)
         t.add_column("Command", style="white", no_wrap=False)
         t.add_column("Reason",  style="dim",  no_wrap=False)
@@ -302,7 +339,7 @@ class Orchestrator:
     def _show_mode_picker(self) -> None:
         console.print()
         t = Table(title="Intensity Mode", box=box.MINIMAL,
-                  header_style="bold cyan", border_style="dim cyan", padding=(0, 2))
+                  border_style="bold cyan",  padding=(0, 2))
         t.add_column("#",    style="cyan",  width=3)
         t.add_column("Mode", style="white", width=12)
         t.add_column("Timeout", style="dim", width=10)
