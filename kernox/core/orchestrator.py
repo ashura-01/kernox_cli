@@ -144,7 +144,7 @@ class Orchestrator:
         if pattern.search(user_input):
             print(f"[DEBUG] Intercepted: {user_input}")  # This will show in terminal
             response = self._chat_handler.chat(user_input)
-            console.print(Panel(Markdown(response), border_style="dim cyan", title="[dim]Response[/dim]"))
+            console.print(Panel(Markdown(response), border_style="dim cyan", title="[dim]Response[/dim]", width=80))
             return True
         return False
 
@@ -265,12 +265,12 @@ class Orchestrator:
 
         plan = _extract_json(ai_resp)
         if not plan:
-            console.print(Panel(Markdown(ai_resp), border_style="dim"))
+            console.print(Panel(Markdown(ai_resp), border_style="dim", width=80))
             return
 
         if plan.get("is_chat"):
             msg = plan.get("message") or ai_resp
-            console.print(Panel(Markdown(msg), border_style="dim"))
+            console.print(Panel(Markdown(msg), border_style="dim", width=80))
             return
 
         if plan.get("analysis"):
@@ -279,7 +279,7 @@ class Orchestrator:
         steps = plan.get("steps", [])
         if not steps:
             if plan.get("message"):
-                console.print(Panel(Markdown(plan["message"]), border_style="dim"))
+                console.print(Panel(Markdown(plan["message"]), border_style="dim", width=80))
             return
 
         self._print_plan(steps)
