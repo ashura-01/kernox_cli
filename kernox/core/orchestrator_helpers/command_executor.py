@@ -161,15 +161,8 @@ class CommandExecutor:
         if not next_steps:
             return
 
-        console.print("\n[bold yellow]🎯 Suggested next steps:[/bold yellow]")
-
-        for i, step in enumerate(next_steps, 1):
-            cmd = step.get("args", {}).get("command", "")[:100]
-            reason = step.get("reason", "")
-            console.print(f"  [cyan]{i}.[/cyan] {cmd}")
-            if reason:
-                console.print(f"     [dim]{reason}[/dim]")
-
+        # Steps already printed by OutputFormatter.format_analysis_summary()
+        # Just show the prompt
         console.print()
         choice = Prompt.ask(
             "  Run which?",
