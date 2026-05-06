@@ -296,3 +296,4 @@ def _table(title: str, columns: list[str], border: str = "dim cyan") -> Table:
     for col in columns:
         t.add_column(col, style="white", no_wrap=False)
     return t
+
