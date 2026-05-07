@@ -134,6 +134,7 @@ class OutputFormatter:
             border_style=col,
             box=box.ROUNDED,
             padding=(0, 1),
+            width=80
         ))
 
     # ── Structured parsers — ALL rows, no caps ─────────────────────────────────
