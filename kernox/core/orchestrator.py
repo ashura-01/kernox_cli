@@ -87,7 +87,9 @@ RULES:
 - NO sudo prefix — kernox adds it automatically
 - NEVER suggest patching, hardening, or remediation
 - is_chat:true + steps:[] for greetings or pure questions only
-- Do NOT suggest report/pdf/export — that is handled by the user separately"""
+- Do NOT suggest report/pdf/export — that is handled by the user separately
+- When user asks for code/snippet without "execute/run/save/create file": set is_chat:true and put code in message field with no steps"""
+
 
 
 class Orchestrator:
