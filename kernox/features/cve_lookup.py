@@ -149,7 +149,7 @@ def display_cves(cves: list[dict], title: str = "CVE Results") -> None:
         title=title,
         box=box.MINIMAL,
         show_header=True,
-        header_style="bold cyan",
+        header_style="none",
         border_style="dim cyan",
         padding=(0, 1),
     )
