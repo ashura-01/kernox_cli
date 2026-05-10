@@ -124,6 +124,11 @@ On first launch, Kernox will:
 | `clear` | Reset session state |
 | `raw on/off` | Toggle raw ANSI output |
 | `auto [target]` | Autonomous chain (up to 5 steps) |
+| `analyze` | Analyze entire session (all saved outputs) |
+| `analyze last` | Analyze most recent tool output |
+| `analyze <toolname>` | Analyze all outputs from a specific tool |
+| `analyze <ip>` | Analyze all findings for a host IP |
+| `analyze on` / `analyze off` | Toggle auto-analysis after each tool run |
 | `exit` / `quit` | Exit Kernox |
 
 ### Natural Language Examples
