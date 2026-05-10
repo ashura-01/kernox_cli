@@ -30,7 +30,7 @@ $ python -m kernox.cli
 v1.0.0       AI Penetration Testing Agent       2026-05-06
 Type a target (IP/URL), ask a question, or type help for all commands
 
-kernox⮞⮞ scan 192.168.1.0/24
+kernox⮞⮞ scan 192.168.0.209
 
 ┌───┬────────────────────────────────────────────────┬────────────────┐
 │ # │ Command                                        │ Reason         │
