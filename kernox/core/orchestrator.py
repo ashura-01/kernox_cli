@@ -36,6 +36,8 @@ from kernox.core.orchestrator_helpers import (
     FeatureHandler,
 )
 from kernox.core.orchestrator_helpers.chat_handler import detect_builtin
+# ── NEW: on-demand analyzer ──────────────────────────────────────────────────
+from kernox.core.orchestrator_helpers.on_demand_analyzer import OnDemandAnalyzer
 
 console = Console()
 PROMPT_STYLE = Style.from_dict({"prompt": "bold cyan"})
@@ -118,6 +120,15 @@ class Orchestrator:
         self._feature_handler = FeatureHandler(self._state, self._cmd_executor._executor)
         self._cmd_executor._chat_handler = self._chat_handler  # Link for recording
 
+        # ── On-demand analysis (shares the same AIAnalyzer — identical output) ──
+        self._on_demand_analyzer = OnDemandAnalyzer(
+            state=self._state,
+            ai_analyzer=self._ai_analyzer,
+        )
+        # Auto-analyze flag — True by default, toggled with `analyze on/off`
+        # Propagated to _cmd_executor so it skips the post-execution AI call.
+        self._auto_analyze: bool = True
+
     def _check_result_question(self, user_input: str) -> bool:
         """Intercept questions about command results before normal processing"""
         result_patterns = [
@@ -144,7 +155,7 @@ class Orchestrator:
 
         pattern = re.compile('|'.join(result_patterns), re.I)
         if pattern.search(user_input):
-            print(f"[DEBUG] Intercepted: {user_input}")  # This will show in terminal
+            print(f"[DEBUG] Intercepted: {user_input}")
             response = self._chat_handler.chat(user_input)
             console.print(Panel(Markdown(response), border_style="dim cyan", title="[dim]Response[/dim]", width=80))
             return True
@@ -203,6 +214,15 @@ class Orchestrator:
                 label_s = "[#55efc4]ON[/#55efc4]" if val == "1" else "[dim]OFF[/dim]"
                 console.print(f"[cyan]✓ Raw output {label_s}[/cyan]")
                 continue
+            # ── analyze commands ──────────────────────────────────────────────
+            elif cmd.startswith("analyze"):
+                rest = user_input[len("analyze"):].strip()
+                if rest.lower() == "on":
+                    self._toggle_auto_analyze(True); continue
+                elif rest.lower() == "off":
+                    self._toggle_auto_analyze(False); continue
+                else:
+                    self._on_demand_analyzer.run(rest); continue
 
             builtin = detect_builtin(user_input)
             if builtin == "report":
@@ -223,10 +243,6 @@ class Orchestrator:
                 self._feature_handler.cve(); continue
             elif builtin == "mode":
                 self._show_mode_picker(); continue
-
-            # ✅ Check if this is a question about results (BEFORE auto_detect)
-            # if self._check_result_question(user_input):
-            #     continue
 
             self._auto_detect_intensity(user_input)
             self._process(user_input)
@@ -328,7 +344,7 @@ class Orchestrator:
         if not steps:
             return
         t = Table(title="Execution Plan", box=box.MINIMAL,
-                  border_style="dim cyan",header_style="none", padding=(0, 1))
+                  border_style="dim cyan", header_style="none", padding=(0, 1))
         t.add_column("#",       style="bold cyan", width=3)
         t.add_column("Command", style="white", no_wrap=False)
         t.add_column("Reason",  style="dim",  no_wrap=False)
@@ -341,7 +357,7 @@ class Orchestrator:
     def _show_mode_picker(self) -> None:
         console.print()
         t = Table(title="Intensity Mode", box=box.MINIMAL,
-                  border_style="bold cyan",  padding=(0, 2))
+                  border_style="bold cyan", padding=(0, 2))
         t.add_column("#",    style="cyan",  width=3)
         t.add_column("Mode", style="white", width=12)
         t.add_column("Timeout", style="dim", width=10)
@@ -366,6 +382,14 @@ class Orchestrator:
         self._ai_analyzer._intensity = self._intensity
         self._reflection._intensity = self._intensity
         console.print(f"[green]✓ Mode → {self._intensity['name']}[/green]")
+
+    def _toggle_auto_analyze(self, enable: bool) -> None:
+        """Enable or disable automatic post-execution AI analysis."""
+        self._auto_analyze = enable
+        # Propagate to command executor so it guards the AIAnalyzer call
+        self._cmd_executor._auto_analyze = enable
+        state = "[#55efc4]ON[/#55efc4]" if enable else "[dim]OFF[/dim]"
+        console.print(f"[cyan]✓ Auto-analysis {state}[/cyan]")
 
     def _auto_detect_intensity(self, text: str) -> None:
         lower = text.lower()
@@ -414,25 +438,30 @@ class Orchestrator:
     def _print_help(self) -> None:
         t = Table(box=box.SIMPLE, show_header=False,
                   border_style="dim cyan", padding=(0, 2))
-        t.add_column(style="bold cyan",  width=22, no_wrap=True)
+        t.add_column(style="bold cyan",  width=28, no_wrap=True)
         t.add_column(style="dim white",  no_wrap=False)
 
         rows = [
-            ("help",             "show this menu"),
-            ("exit / quit",      "exit kernox"),
-            ("clear",            "reset session state and history"),
-            ("mode",             "pick intensity: STEALTH / NORMAL / AGGRESSIVE / FULL"),
-            ("raw on / raw off", "toggle live streaming of tool output"),
-            ("auto [target]",    "autonomous agent chain — AI plans & runs up to 5 steps"),
-            ("state",            "show hosts, findings, web paths, tools run"),
-            ("score",            "CVSS risk summary for all session findings"),
-            ("cve <query>",      "search NIST NVD — keyword or exact CVE-ID"),
-            ("payload",          "interactive msfvenom payload builder"),
-            ("log",              "attack timeline  |  log clear — wipe it"),
-            ("report",           "export findings to PDF"),
-            ("save",             "save session to disk"),
-            ("load",             "restore a saved session"),
-            ("sessions",         "list all saved sessions"),
+            ("help",                            "show this menu"),
+            ("exit / quit",                     "exit kernox"),
+            ("clear",                           "reset session state and history"),
+            ("mode",                            "pick intensity: STEALTH / NORMAL / AGGRESSIVE / FULL"),
+            ("raw on / raw off",                "toggle live streaming of tool output"),
+            ("auto [target]",                   "autonomous agent chain — AI plans & runs up to 5 steps"),
+            ("state",                           "show hosts, findings, web paths, tools run"),
+            ("score",                           "CVSS risk summary for all session findings"),
+            ("cve <query>",                     "search NIST NVD — keyword or exact CVE-ID"),
+            ("payload",                         "interactive msfvenom payload builder"),
+            ("log",                             "attack timeline  |  log clear — wipe it"),
+            ("report",                          "export findings to PDF"),
+            ("save",                            "save session to disk"),
+            ("load",                            "restore a saved session"),
+            ("sessions",                        "list all saved sessions"),
+            ("analyze",                         "analyze entire session (all saved outputs)"),
+            ("analyze last",                    "analyze most recent tool output"),
+            ("analyze <toolname>",              "analyze all outputs from a specific tool"),
+            ("analyze <ip>",                    "analyze all findings for a host IP"),
+            ("analyze on / analyze off",        "toggle auto-analysis after each tool run"),
         ]
         for cmd, desc in rows:
             t.add_row(cmd, desc)

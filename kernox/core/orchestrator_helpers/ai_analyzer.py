@@ -4,12 +4,20 @@ ai_analyzer.py — Post-execution AI analysis.
 ONE AI call per chunk. Reflection + structured extraction in same response.
 Full output chunked at 10k chars. Anti-hallucination prompts with real examples.
 NEVER suggests patching or remediation.
+
+Fixes applied:
+  1. Rate limiting  — enforced sleep between chunk API calls (configurable)
+  2. Generic prompt — no hardcoded vsftpd example; uses neutral placeholder
+  3. Input validation — early return on empty/invalid tool_name or target
+  4. JSON repair    — only attempted on fragments long enough to be truncated
+  5. NVD dedup      — class-level set tracks enriched vulns; never enriches twice
 """
 
 from __future__ import annotations
 
 import json
 import re
+import time
 from typing import TYPE_CHECKING
 from rich.console import Console
 from rich.live import Live
@@ -24,7 +32,16 @@ if TYPE_CHECKING:
 
 console = Console()
 
-CHUNK_SIZE = 10000
+CHUNK_SIZE = 10_000
+
+# Minimum seconds to wait between consecutive AI calls within one analyze() run.
+# Groq free tier: ~30 req/min → 2 s gives comfortable headroom.
+# Set to 0 to disable (e.g. when using a provider without rate limits).
+INTER_CHUNK_DELAY: float = 1.5
+
+# Only attempt JSON repair on fragments at least this long.
+# Short fragments that fail to parse are almost certainly garbage, not truncation.
+MIN_REPAIR_LENGTH = 500
 
 ANALYSIS_SYSTEM = (
     "You are an offensive security AI. "
@@ -37,8 +54,9 @@ ANALYSIS_SYSTEM = (
 def _build_prompt(tool: str, target: str, mode: str,
                   chunk_info: str, output: str) -> str:
     """
-    Build analysis prompt with real concrete examples — not placeholder strings.
-    Real examples prevent the AI from echoing the schema back as its answer.
+    Build analysis prompt with concrete but generic examples.
+    Generic placeholders prevent the AI from echoing the example
+    back verbatim when no matching service is present.
     """
     return (
         f"Tool: {tool}\nTarget: {target}\nMode: {mode}\n"
@@ -48,22 +66,22 @@ def _build_prompt(tool: str, target: str, mode: str,
         "(use empty arrays [] for sections with no findings):\n"
         "{\n"
         '  "summary": "one sentence describing what was found",\n'
-        '  "hosts": [{"ip": "192.168.1.1", "hostname": "web01", "os": "Linux 4.x"}],\n'
+        '  "hosts": [{"ip": "192.168.1.1", "hostname": "host01", "os": "Linux"}],\n'
         '  "ports": [{"ip": "192.168.1.1", "port": 80, "proto": "tcp", '
         '"service": "http", "version": "Apache 2.4"}],\n'
         '  "credentials": [{"host": "192.168.1.1", "service": "ftp", '
-        '"login": "admin", "password": "password123"}],\n'
+        '"login": "admin", "password": "secret"}],\n'
         '  "paths": [{"path": "/admin", "status": 200}],\n'
-        '  "vulnerabilities": [{"name": "vsftpd 2.3.4 Backdoor", '
+        '  "vulnerabilities": [{"name": "Service X Version Y Known Exploit", '
         '"severity": "critical", '
-        '"description": "vsftpd 2.3.4 has a deliberate backdoor", '
-        '"impact": "unauthenticated root shell", '
-        f'"exploit": "msfconsole -q -x \'use exploit/unix/ftp/vsftpd_234_backdoor; '
+        '"description": "Service X version Y contains a known exploitable flaw", '
+        '"impact": "unauthenticated remote code execution", '
+        f'"exploit": "msfconsole -q -x \'use exploit/<path>; '
         f'set RHOSTS {target}; run\'"}},\n'
         '  "next_steps": [{"tool": "shell", '
-        f'"args": {{"command": "searchsploit vsftpd 2.3.4", "target": "{target}"}}, '
-        '"reason": "find additional exploits"}],\n'
-        '  "reflection": "vsftpd backdoor found — exploit directly before scanning further"\n'
+        f'"args": {{"command": "searchsploit <service> <version>", "target": "{target}"}}, '
+        '"reason": "find additional exploits for discovered service"}],\n'
+        '  "reflection": "high-value service found — exploit directly before broader scanning"\n'
         "}\n"
         f"Apply {mode} timing to all suggested commands. "
         "Exploit-focused only. No remediation advice."
@@ -74,22 +92,36 @@ def extract_json(text: str) -> dict | None:
     text = text.strip()
     if text.startswith("```"):
         text = "\n".join(
-            l for l in text.split("\n") if not l.strip().startswith("```")
+            line for line in text.split("\n")
+            if not line.strip().startswith("```")
         ).strip()
+
     m = re.search(r"\{.*\}", text, re.DOTALL)
     if not m:
         return None
+
+    fragment = m.group()
+
+    # Fast path: valid as-is
     try:
-        return json.loads(m.group())
+        return json.loads(fragment)
     except json.JSONDecodeError:
-        # Try to fix truncated JSON by closing open structures
-        fragment = m.group().rstrip()
-        for suffix in [']}', ']}]}', '}]}', '}}']:
-            try:
-                return json.loads(fragment + suffix)
-            except json.JSONDecodeError:
-                continue
+        pass
+
+    # Repair only makes sense for fragments long enough to be truncated JSON.
+    # Short failures are almost always garbage or schema echoes — don't waste
+    # time trying to patch them; return None and let the caller handle it.
+    if len(fragment) < MIN_REPAIR_LENGTH:
         return None
+
+    fragment = fragment.rstrip()
+    for suffix in [']}', ']}]}', '}]}', '}}']:
+        try:
+            return json.loads(fragment + suffix)
+        except json.JSONDecodeError:
+            continue
+
+    return None
 
 
 def _chunk_output(text: str, size: int) -> list[str]:
@@ -108,6 +140,10 @@ def _chunk_output(text: str, size: int) -> list[str]:
 
 
 class AIAnalyzer:
+    # Class-level set so enrichment dedup survives across multiple analyze() calls
+    # within the same session (e.g. analyze all → many chunks all hitting enrich).
+    _enriched_vulns: set[str] = set()
+
     def __init__(self, ai_client, state, intensity):
         self._ai        = ai_client
         self._state     = state
@@ -117,6 +153,11 @@ class AIAnalyzer:
     def set_reflection_engine(self, engine) -> None:
         self._reflection = engine
 
+    @classmethod
+    def reset_enrichment_cache(cls) -> None:
+        """Call this on session clear so a fresh session re-enriches everything."""
+        cls._enriched_vulns.clear()
+
     def analyze(self, tool_name: str, target: str, raw_output: str) -> list[dict]:
         """
         Analyze full tool output in chunks.
@@ -124,9 +165,19 @@ class AIAnalyzer:
         No separate AI calls for state parsing.
         Returns validated next_steps.
         """
-        if not raw_output.strip():
+        # ── Input validation ──────────────────────────────────────────────────
+        if not raw_output or not raw_output.strip():
             return []
 
+        tool_name = (tool_name or "unknown").strip()
+        target    = (target    or "unknown").strip()
+
+        if not tool_name:
+            tool_name = "unknown"
+        if not target:
+            target = "unknown"
+
+        # ── Chunk + iterate ───────────────────────────────────────────────────
         mode   = self._intensity.get("name", "NORMAL")
         chunks = _chunk_output(raw_output, CHUNK_SIZE)
         total  = len(chunks)
@@ -134,6 +185,10 @@ class AIAnalyzer:
         all_vulns, all_steps, all_summaries = [], [], []
 
         for idx, chunk in enumerate(chunks, 1):
+            # Rate limiting: sleep before every call except the very first
+            if idx > 1 and INTER_CHUNK_DELAY > 0:
+                time.sleep(INTER_CHUNK_DELAY)
+
             chunk_info = f"[Part {idx} of {total}]\n" if total > 1 else ""
             prompt     = _build_prompt(
                 tool=tool_name, target=target, mode=mode,
@@ -184,17 +239,18 @@ class AIAnalyzer:
         if not all_summaries and not all_vulns:
             return []
 
-        # Deduplicate vulns by name (single clean pass)
-        unique_vulns = []
-        seen_names   = set()
+        # ── Deduplicate vulns by name ─────────────────────────────────────────
+        unique_vulns: list[dict] = []
+        seen_names: set[str]     = set()
         for v in all_vulns:
-            n = v.get("name", "").lower()
+            n = v.get("name", "").lower().strip()
             if n and n not in seen_names:
                 seen_names.add(n)
                 unique_vulns.append(v)
 
-        unique_steps = []
-        seen_cmds    = set()
+        # ── Deduplicate steps by command ──────────────────────────────────────
+        unique_steps: list[dict] = []
+        seen_cmds: set[str]      = set()
         for s in all_steps:
             c = s.get("args", {}).get("command", "")
             if c and c not in seen_cmds:
@@ -207,6 +263,7 @@ class AIAnalyzer:
         for vuln in unique_vulns[:10]:
             if not vuln.get("name"):
                 continue
+
             OutputFormatter.format_vulnerability(vuln)
             self._state.add_ai_insight(
                 vulnerability=vuln.get("name", ""),
@@ -215,19 +272,33 @@ class AIAnalyzer:
                 target=target,
                 explanation=vuln,
             )
+
             try:
                 from kernox.features.attack_log import log_finding
                 from kernox.features.exploit_score import render_score_from_finding
-                log_finding(vuln.get("name",""), vuln.get("severity","info"),
-                            tool_name, target, vuln.get("exploit",""))
+                log_finding(
+                    vuln.get("name", ""),
+                    vuln.get("severity", "info"),
+                    tool_name,
+                    target,
+                    vuln.get("exploit", ""),
+                )
                 render_score_from_finding(vuln)
-                if vuln.get("severity","").lower() in ("critical","high"):
-                    from kernox.features.cve_lookup import enrich_finding
-                    enrich_finding(vuln.get("name",""), tool_name)
+
+                # NVD enrichment — only for critical/high, and only once per
+                # unique vuln name across the entire session.
+                if vuln.get("severity", "").lower() in ("critical", "high"):
+                    vuln_key = vuln.get("name", "").lower().strip()
+                    if vuln_key and vuln_key not in AIAnalyzer._enriched_vulns:
+                        AIAnalyzer._enriched_vulns.add(vuln_key)
+                        from kernox.features.cve_lookup import enrich_finding
+                        enrich_finding(vuln.get("name", ""), tool_name)
+
             except Exception:
                 pass
 
-        valid = []
+        # ── Validate + sanitize next steps ────────────────────────────────────
+        valid: list[dict] = []
         for step in unique_steps[:3]:
             cmd = step.get("args", {}).get("command", "")
             if not cmd:

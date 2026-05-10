@@ -8,7 +8,7 @@ Flow:
   4. Show output (table if structured, raw lines otherwise)
   5. Save to state
   6. Log to attack timeline
-  7. AI analyzes output → extracts vulns + structured state (hosts/ports/etc.)
+  7. AI analyzes output (only when auto-analyze is ON) → extracts vulns + structured state
      (state_parser is called FROM ai_analyzer — no separate AI call)
   8. Chain next steps with user confirmation (up to 3 levels)
 """
@@ -33,12 +33,13 @@ _MAX_CHAIN_DEPTH = 3
 
 class CommandExecutor:
     def __init__(self, config, state, ai_analyzer=None):
-        self._cfg         = config
-        self._state       = state
-        self._executor    = Executor(config)
-        self._ai_analyzer = ai_analyzer   # injected by Orchestrator
-        self._reflection  = None          # injected by Orchestrator
-        self._chat_handler = None         # injected by Orchestrator for recording
+        self._cfg          = config
+        self._state        = state
+        self._executor     = Executor(config)
+        self._ai_analyzer  = ai_analyzer   # injected by Orchestrator
+        self._reflection   = None          # injected by Orchestrator
+        self._chat_handler = None          # injected by Orchestrator for recording
+        self._auto_analyze: bool = True    # toggled by `analyze on / analyze off`
 
     def run_shell_step(
         self,
@@ -67,8 +68,7 @@ class CommandExecutor:
         console.print()
         if reason:
             console.print(f"[dim cyan]{reason}[/dim cyan]")
-        # console.print(Markdown(f"```bash\n{san.command}\n```"))
-        console.print(Panel(Markdown(f"```bash\n{san.command}\n```"), width=80,border_style="dim", box=box.MINIMAL))
+        console.print(Panel(Markdown(f"```bash\n{san.command}\n```"), width=80, border_style="dim", box=box.MINIMAL))
 
         if not Confirm.ask("  Execute?", default=True):
             console.print("[dim]Skipped.[/dim]")
@@ -133,17 +133,20 @@ class CommandExecutor:
 
         # PTY tools: analyze captured session output after they exit
         if san.needs_pty and result.stdout.strip() and self._ai_analyzer:
-            console.print("\n[dim cyan]Analyzing session output...[/dim cyan]")
-            next_steps = self._ai_analyzer.analyze(
-                tool_name  = result.tool_name,
-                target     = target or "unknown",
-                raw_output = result.stdout,
-            )
-            self._offer_chain(next_steps, intensity, _chain_depth)
+            if self._auto_analyze:
+                console.print("\n[dim cyan]Analyzing session output...[/dim cyan]")
+                next_steps = self._ai_analyzer.analyze(
+                    tool_name  = result.tool_name,
+                    target     = target or "unknown",
+                    raw_output = result.stdout,
+                )
+                self._offer_chain(next_steps, intensity, _chain_depth)
             return result.stdout
 
         # AI analysis — extracts vulns AND structured state in ONE call
+        # Guarded by _auto_analyze flag (toggled with `analyze on/off`)
         if (self._ai_analyzer
+                and self._auto_analyze                # ← on-demand toggle guard
                 and result.stdout.strip()
                 and not result.blocked
                 and _chain_depth < _MAX_CHAIN_DEPTH):
@@ -153,6 +156,11 @@ class CommandExecutor:
                 raw_output = result.stdout,
             )
             self._offer_chain(next_steps, intensity, _chain_depth)
+        elif not self._auto_analyze and result.stdout.strip():
+            console.print(
+                "[dim]Auto-analysis off — run [cyan]analyze last[/cyan] "
+                "to analyze this output.[/dim]"
+            )
 
         return result.stdout if (not result.blocked and result.return_code >= 0) else None
 

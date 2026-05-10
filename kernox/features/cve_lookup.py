@@ -9,6 +9,7 @@ With a key:    50 requests/30s limit.
 
 from __future__ import annotations
 
+import re
 import time
 import urllib.request
 import urllib.parse
@@ -27,6 +28,71 @@ console = Console()
 NVD_BASE = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 _last_request_time: float = 0.0
 _RATE_LIMIT_DELAY = 6.5   # seconds between requests (no-key tier safe)
+
+# Matches a product name followed by a version number anywhere in the string.
+# Examples that match:
+#   "VSFTPD 2.3.4 Backdoor Exploit"        → "vsftpd 2.3.4"
+#   "OpenSSH 7.4p1 Authentication Bypass"  → "openssh 7.4p1"
+#   "Apache Struts 2.5.16 RCE"             → "apache struts 2.5.16"
+#   "MySQL 5.5.62 Remote Code Execution"   → "mysql 5.5.62"
+#   "SMBv1 EternalBlue MS17-010"           → falls back to "eternalblue ms17-010"
+#
+# Pattern: one or more words (the product name) followed by a version token
+# that starts with a digit (e.g. 2.3.4, 7.4p1, 1.0-beta).
+_PRODUCT_VERSION_RE = re.compile(
+    r"((?:[A-Za-z][A-Za-z0-9._-]*\s+){1,4})"   # 1–4 product name words
+    r"(\d[\d.\w-]*)",                            # version starting with a digit
+    re.IGNORECASE,
+)
+
+# Noise words that should never be the sole content of a search query.
+# If extraction strips everything down to just these, we fall back.
+_NOISE_WORDS = frozenset({
+    "backdoor", "exploit", "bypass", "injection", "overflow", "rce",
+    "execution", "disclosure", "traversal", "vulnerability", "attack",
+    "unauthenticated", "remote", "local", "default", "password", "access",
+    "code", "arbitrary", "command", "file", "path", "null", "heap", "stack",
+})
+
+
+def _extract_search_term(vuln_name: str) -> str:
+    """
+    Extract the most NVD-friendly search term from a descriptive vuln name.
+
+    Strategy:
+      1. Try to pull "product version" via regex (e.g. "vsftpd 2.3.4")
+      2. If no version found, strip trailing noise words and use what remains
+      3. Fall back to the original name if extraction produces nothing useful
+
+    Returns a stripped, lowercase search term.
+    """
+    m = _PRODUCT_VERSION_RE.search(vuln_name)
+    if m:
+        product = m.group(1).strip()
+        version = m.group(2).strip()
+        term = f"{product} {version}".lower().strip()
+        # Sanity check: at least one non-noise word in the product part
+        product_words = set(product.lower().split())
+        if product_words - _NOISE_WORDS:
+            return term
+
+    # No version found — strip trailing noise words from the name
+    words = vuln_name.split()
+    while words and words[-1].lower().rstrip(".,;:") in _NOISE_WORDS:
+        words.pop()
+    # Also strip leading noise
+    while words and words[0].lower().rstrip(".,;:") in _NOISE_WORDS:
+        words.pop(0)
+
+    stripped = " ".join(words).strip()
+    meaningful_words = [w for w in stripped.split() if w.lower() not in _NOISE_WORDS]
+
+    # Need at least one meaningful word to be worth searching
+    if meaningful_words:
+        return stripped.lower()
+
+    # Nothing useful extracted — return original so the caller can log the miss
+    return vuln_name.lower()
 
 
 def _get_api_key() -> Optional[str]:
@@ -124,13 +190,32 @@ def _parse_cves(raw: list[dict]) -> list[dict]:
 
 
 def enrich_finding(vuln_name: str, tool_name: str) -> None:
-    """Synchronous CVE enrichment — prints BEFORE returning."""
+    """
+    Synchronous CVE enrichment — prints BEFORE returning.
+
+    Extracts the most NVD-friendly search term from the vuln name,
+    falls back to the original name if extraction changes nothing useful.
+    Always tries the extracted term first; if that returns nothing and
+    the extracted term differs from the original, tries the original too.
+    """
+    if not vuln_name or not vuln_name.strip():
+        return
+
     try:
-        cves = search_cve(vuln_name, max_results=3)
+        search_term = _extract_search_term(vuln_name)
+        original    = vuln_name.lower().strip()
+
+        cves = search_cve(search_term, max_results=3)
+
+        # If the extracted term found nothing AND it differs from the original,
+        # retry with the raw name as a last resort (costs one extra API call).
+        if not cves and search_term != original:
+            cves = search_cve(vuln_name, max_results=3)
+
         if cves:
             display_cves(cves, title=f"CVEs — {vuln_name}")
         else:
-            encoded_query = urllib.parse.quote(vuln_name)
+            encoded_query = urllib.parse.quote(search_term)
             console.print(
                 f"  [dim]No NVD match for '{vuln_name}' — "
                 f"https://nvd.nist.gov/vuln/search?query={encoded_query}[/dim]"
