@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 console = Console()
 
-CHUNK_SIZE = 10_000
+CHUNK_SIZE = 100_000
 
 # Minimum seconds to wait between consecutive AI calls within one analyze() run.
 # Groq free tier: ~30 req/min → 2 s gives comfortable headroom.
@@ -51,19 +51,17 @@ ANALYSIS_SYSTEM = (
 )
 
 
-def _build_prompt(tool: str, target: str, mode: str,
-                  chunk_info: str, output: str) -> str:
-    """
-    Build analysis prompt with concrete but generic examples.
-    Generic placeholders prevent the AI from echoing the example
-    back verbatim when no matching service is present.
-    """
+def _build_prompt(
+    tool: str, target: str, mode: str, chunk_info: str, output: str
+) -> str:
     return (
         f"Tool: {tool}\nTarget: {target}\nMode: {mode}\n"
         f"{chunk_info}"
         f"\nOUTPUT:\n{output}\n\n"
         "Analyze the output above. Return this JSON schema filled with real data "
-        "(use empty arrays [] for sections with no findings):\n"
+        "(use empty arrays [] for sections with no findings):\n\n"
+        "CRITICAL: Extract EXACT software names and versions from the output (e.g., 'vsftpd 2.3.4', 'OpenSSH 7.2p2'). "
+        "Do NOT use placeholders like 'EXACT_SOFTWARE_VERSION'.\n\n"
         "{\n"
         '  "summary": "one sentence describing what was found",\n'
         '  "hosts": [{"ip": "192.168.1.1", "hostname": "host01", "os": "Linux"}],\n'
@@ -72,14 +70,13 @@ def _build_prompt(tool: str, target: str, mode: str,
         '  "credentials": [{"host": "192.168.1.1", "service": "ftp", '
         '"login": "admin", "password": "secret"}],\n'
         '  "paths": [{"path": "/admin", "status": 200}],\n'
-        '  "vulnerabilities": [{"name": "Service X Version Y Known Exploit", '
+        '  "vulnerabilities": [{"name": "vsftpd 2.3.4 Backdoor", '
         '"severity": "critical", '
-        '"description": "Service X version Y contains a known exploitable flaw", '
-        '"impact": "unauthenticated remote code execution", '
-        f'"exploit": "msfconsole -q -x \'use exploit/<path>; '
-        f'set RHOSTS {target}; run\'"}},\n'
+        '"description": "vsftpd 2.3.4 has a deliberate backdoor", '
+        '"impact": "unauthenticated root shell", '
+        f'"exploit": "msfconsole -q -x \'use exploit/unix/ftp/vsftpd_234_backdoor; set RHOSTS {target}; run\'"}}],\n'
         '  "next_steps": [{"tool": "shell", '
-        f'"args": {{"command": "searchsploit <service> <version>", "target": "{target}"}}, '
+        f'"args": {{"command": "searchsploit vsftpd 2.3.4", "target": "{target}"}}, '
         '"reason": "find additional exploits for discovered service"}],\n'
         '  "reflection": "high-value service found — exploit directly before broader scanning"\n'
         "}\n"
@@ -92,8 +89,7 @@ def extract_json(text: str) -> dict | None:
     text = text.strip()
     if text.startswith("```"):
         text = "\n".join(
-            line for line in text.split("\n")
-            if not line.strip().startswith("```")
+            line for line in text.split("\n") if not line.strip().startswith("```")
         ).strip()
 
     m = re.search(r"\{.*\}", text, re.DOTALL)
@@ -115,7 +111,7 @@ def extract_json(text: str) -> dict | None:
         return None
 
     fragment = fragment.rstrip()
-    for suffix in [']}', ']}]}', '}]}', '}}']:
+    for suffix in ["]}", "]}]}", "}]}", "}}"]:
         try:
             return json.loads(fragment + suffix)
         except json.JSONDecodeError:
@@ -145,8 +141,8 @@ class AIAnalyzer:
     _enriched_vulns: set[str] = set()
 
     def __init__(self, ai_client, state, intensity):
-        self._ai        = ai_client
-        self._state     = state
+        self._ai = ai_client
+        self._state = state
         self._intensity = intensity
         self._reflection: "ReflectionEngine | None" = None
 
@@ -170,7 +166,7 @@ class AIAnalyzer:
             return []
 
         tool_name = (tool_name or "unknown").strip()
-        target    = (target    or "unknown").strip()
+        target = (target or "unknown").strip()
 
         if not tool_name:
             tool_name = "unknown"
@@ -178,9 +174,9 @@ class AIAnalyzer:
             target = "unknown"
 
         # ── Chunk + iterate ───────────────────────────────────────────────────
-        mode   = self._intensity.get("name", "NORMAL")
+        mode = self._intensity.get("name", "NORMAL")
         chunks = _chunk_output(raw_output, CHUNK_SIZE)
-        total  = len(chunks)
+        total = len(chunks)
 
         all_vulns, all_steps, all_summaries = [], [], []
 
@@ -190,13 +186,17 @@ class AIAnalyzer:
                 time.sleep(INTER_CHUNK_DELAY)
 
             chunk_info = f"[Part {idx} of {total}]\n" if total > 1 else ""
-            prompt     = _build_prompt(
-                tool=tool_name, target=target, mode=mode,
-                chunk_info=chunk_info, output=chunk,
+            prompt = _build_prompt(
+                tool=tool_name,
+                target=target,
+                mode=mode,
+                chunk_info=chunk_info,
+                output=chunk,
             )
             spinner_txt = (
                 f"[cyan]Analyzing part {idx}/{total}...[/cyan]"
-                if total > 1 else "[cyan]Analyzing...[/cyan]"
+                if total > 1
+                else "[cyan]Analyzing...[/cyan]"
             )
 
             try:
@@ -221,8 +221,8 @@ class AIAnalyzer:
                 # Feed structured data to state — no extra AI call
                 try:
                     from kernox.engine.state_parser import auto_parse
-                    auto_parse(tool_name, target, "", self._state,
-                               parsed_data=data)
+
+                    auto_parse(tool_name, target, "", self._state, parsed_data=data)
                 except Exception:
                     pass
 
@@ -241,7 +241,7 @@ class AIAnalyzer:
 
         # ── Deduplicate vulns by name ─────────────────────────────────────────
         unique_vulns: list[dict] = []
-        seen_names: set[str]     = set()
+        seen_names: set[str] = set()
         for v in all_vulns:
             n = v.get("name", "").lower().strip()
             if n and n not in seen_names:
@@ -250,7 +250,7 @@ class AIAnalyzer:
 
         # ── Deduplicate steps by command ──────────────────────────────────────
         unique_steps: list[dict] = []
-        seen_cmds: set[str]      = set()
+        seen_cmds: set[str] = set()
         for s in all_steps:
             c = s.get("args", {}).get("command", "")
             if c and c not in seen_cmds:
@@ -276,6 +276,7 @@ class AIAnalyzer:
             try:
                 from kernox.features.attack_log import log_finding
                 from kernox.features.exploit_score import render_score_from_finding
+
                 log_finding(
                     vuln.get("name", ""),
                     vuln.get("severity", "info"),
@@ -292,6 +293,7 @@ class AIAnalyzer:
                     if vuln_key and vuln_key not in AIAnalyzer._enriched_vulns:
                         AIAnalyzer._enriched_vulns.add(vuln_key)
                         from kernox.features.cve_lookup import enrich_finding
+
                         enrich_finding(vuln.get("name", ""), tool_name)
 
             except Exception:
