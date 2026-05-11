@@ -16,7 +16,7 @@ console = Console()
 
 # Retry settings
 _MAX_RETRIES = 3
-_RETRY_DELAY = 2.0  # seconds, doubles each attempt
+_RETRY_DELAY = 2.0
 
 
 def _retry_request(fn, retries: int = _MAX_RETRIES, delay: float = _RETRY_DELAY):
@@ -54,13 +54,14 @@ class ClaudeClient(BaseAIClient):
     """Anthropic Claude via the official Messages API."""
 
     API_URL = "https://api.anthropic.com/v1/messages"
-    DEFAULT_MODEL = "claude-sonnet-4-5"  # claude-sonnet-4-5 is the correct API model string
+    DEFAULT_MODEL = "claude-sonnet-4-5"
+    INTER_CALL_DELAY = 0.5   # Claude API is generous — 0.5 s is enough
 
     def __init__(self, api_key: str, model: str = DEFAULT_MODEL) -> None:
         self._api_key = api_key
         self._model = model
 
-    def chat(
+    def _chat_impl(
         self,
         messages: list[dict],
         *,
@@ -99,7 +100,11 @@ class ClaudeClient(BaseAIClient):
 
 
 class OpenAICompatibleClient(BaseAIClient):
-    """Client for any OpenAI-compatible REST endpoint."""
+    """Client for any OpenAI-compatible REST endpoint (OpenAI, Groq, Cerebras, etc.)."""
+
+    # 2.0 s is safe for Groq/Cerebras free tiers.
+    # Users on paid tiers can lower this in config or subclass.
+    INTER_CALL_DELAY = 2.0
 
     def __init__(
         self,
@@ -111,7 +116,7 @@ class OpenAICompatibleClient(BaseAIClient):
         self._base_url = base_url.rstrip("/")
         self._model = model
 
-    def chat(
+    def _chat_impl(
         self,
         messages: list[dict],
         *,
@@ -161,12 +166,13 @@ class GeminiClient(BaseAIClient):
 
     API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     DEFAULT_MODEL = "gemini-1.5-pro"
+    INTER_CALL_DELAY = 1.0   # Gemini free tier is generous
 
     def __init__(self, api_key: str, model: str = DEFAULT_MODEL) -> None:
         self._api_key = api_key
         self._model = model
 
-    def chat(
+    def _chat_impl(
         self,
         messages: list[dict],
         *,
@@ -176,7 +182,6 @@ class GeminiClient(BaseAIClient):
     ) -> str:
         url = self.API_URL.format(model=self._model)
 
-        # Convert messages to Gemini's "contents" format
         contents = []
         for msg in messages:
             role = "user" if msg["role"] == "user" else "model"
@@ -193,7 +198,6 @@ class GeminiClient(BaseAIClient):
             },
         }
 
-        # Gemini supports a system instruction block
         if system:
             payload["system_instruction"] = {
                 "parts": [{"text": system}]

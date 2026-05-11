@@ -1,14 +1,10 @@
 """
 kernox.ai.ollama  –  Local Ollama AI client.
 """
-
 from __future__ import annotations
-
 from typing import Optional
-
 import requests
 from rich.console import Console
-
 from kernox.ai.base import BaseAIClient
 
 console = Console()
@@ -17,11 +13,13 @@ console = Console()
 class OllamaClient(BaseAIClient):
     """Talks to a locally-running Ollama instance via its REST API."""
 
+    INTER_CALL_DELAY = 0.0   # local model, no rate limit needed
+
     def __init__(self, base_url: str = "http://localhost:11434", model: str = "llama3") -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
 
-    def chat(
+    def _chat_impl(
         self,
         messages: list[dict],
         *,
@@ -40,7 +38,6 @@ class OllamaClient(BaseAIClient):
         }
         if system:
             payload["system"] = system
-
         try:
             resp = requests.post(
                 f"{self._base_url}/api/chat",
