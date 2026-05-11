@@ -49,8 +49,6 @@ _PHASE_NAMES = {
     4: "Exploitation",
 }
 
-# Representative tools for each phase — used in the prompt so any model
-# understands what belongs where without needing internal knowledge.
 _PHASE_TOOLS = {
     1: "whois, dig, dnsrecon, host, curl -I, ping",
     2: "nmap, rustscan, masscan",
@@ -58,14 +56,10 @@ _PHASE_TOOLS = {
     4: "sqlmap, msfconsole, msfvenom, hydra, medusa, john, hashcat",
 }
 
-# Minimum output length (chars) to count a tool run as "produced useful data".
-# Prevents phase advance on empty results, errors, or single-line outputs.
 _MIN_OUTPUT_FOR_ADVANCE = 200
 
-# IP address pattern
 _IP_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 
-# Tight system prompt — attacker only, no patch advice
 _REFLECTION_SYSTEM = (
     "You are an offensive security agent executing a structured attack chain. "
     "Follow the phase rules in the user prompt STRICTLY. "
@@ -74,9 +68,6 @@ _REFLECTION_SYSTEM = (
     "Return ONLY valid JSON, no markdown, no extra text."
 )
 
-# Phase-aware reflection prompt template.
-# Note: phase advancement is decided by Kernox internally, NOT by the AI.
-# The AI only picks the next command from the current phase's allowed tools.
 _REFLECT_PROMPT = """\
 Tool just run  : {tool}
 Target         : {target}
@@ -97,27 +88,33 @@ Return EXACTLY this JSON and nothing else:
   "reflection": "one sentence: what did this output reveal?",
   "next_step": {{
     "tool": "shell",
-    "args": {{"command": "exact full command including all flags and target", "target": "{bare_target}"}},
+    "args": {{"command": "exact full command including all flags and target", "target": "{target}"}},
     "reason": "one sentence why this is the best next action"
   }}
 }}
 
 RULES — follow every one, no exceptions:
 1. "tool" field MUST be "shell" — never put a binary name there
-2. "command" must be complete and runnable: binary + all flags + target
+2. "command" must be complete and runnable: binary + all flags + correct target form
 3. Pick ONE tool from the "Allowed tools" list — nothing else
 4. NEVER pick a tool listed under "Already ran"
-5. NEVER use a URL (https://...) as the target for nmap, whois, dig, gobuster, nikto — use bare hostname "{bare_target}" instead
+5. Use the correct target form per tool:
+   - nmap, whois, dig, host, ping → use bare hostname "{bare_target}" (no http/https)
+   - nikto, gobuster, dirb, curl, whatweb, wpscan, sqlmap → use full URL with protocol if available
+   - When the original target is an IP, always use the IP directly
 6. NEVER suggest: msfconsole, reverse shell, privilege escalation, payload, msfvenom
 7. If every allowed tool has already run, set next_step to null
 8. No patching, hardening, or remediation advice
+9. "target" in args must match whatever form you used in "command"
 
-Good command examples for this target:
+Good command examples (adapt to actual target — do NOT copy verbatim):
   nmap -sV -T4 --open {bare_target}
-  nikto -h {bare_target}
+  nikto -h https://{bare_target}
   gobuster dir -u https://{bare_target} -w /usr/share/wordlists/dirb/common.txt
   whatweb https://{bare_target}
+  wpscan --url https://{bare_target}
   dig {bare_target}
+  whois {bare_target}
 """
 
 
@@ -134,7 +131,6 @@ def _extract_json(text: str) -> dict | None:
     try:
         return json.loads(m.group())
     except json.JSONDecodeError:
-        # Attempt repair for truncated responses
         fragment = m.group().rstrip()
         for suffix in ["}", "}}", "}]}", "]}}}"]:
             try:
@@ -161,9 +157,9 @@ def _bootstrap_command(tool_name: str, target: str) -> dict | None:
     """
     Deterministic first command — no AI involved.
 
-    Web URL  → whatweb   (tech stack + CMS detection, feeds all later phases)
-    IP       → nmap -sV  (open services, feeds enumeration phase)
-    Domain   → whois     (ownership info, phase 1 recon)
+    Web URL  → whatweb with full URL  (preserves https:// for accurate scan)
+    IP       → nmap -sV               (open services, feeds enumeration phase)
+    Domain   → whois bare hostname    (ownership info, phase 1 recon)
     """
     t = target.strip()
 
@@ -171,7 +167,8 @@ def _bootstrap_command(tool_name: str, target: str) -> dict | None:
         bare = _strip_url(t)
         return {
             "tool": "shell",
-            "args": {"command": f"whatweb {t}", "target": bare},
+            # Keep full URL so whatweb follows the correct protocol
+            "args": {"command": f"whatweb {t}", "target": t},
             "reason": "identify web technologies and CMS before scanning",
         }
 
@@ -182,7 +179,7 @@ def _bootstrap_command(tool_name: str, target: str) -> dict | None:
             "reason": "version scan to identify open services before enumeration",
         }
 
-    # Domain / hostname
+    # Domain / hostname — no protocol, whois/dig use bare name
     return {
         "tool": "shell",
         "args": {"command": f"whois {t}", "target": t},
@@ -222,12 +219,12 @@ class ReflectionEngine:
         """
         Record that a tool produced meaningful output in the current phase.
         Advances phase when enough distinct tools have run.
-        Phase 1 → 2 : after 1 recon tool (whois/dig/curl gives enough to scan)
-        Phase 2 → 3 : after 1 scanning tool (nmap output feeds enumeration)
-        Phase 3 → 4 : after 2 enumeration tools (need service + dir info)
+        Phase 1 → 2 : after 1 recon tool
+        Phase 2 → 3 : after 1 scanning tool
+        Phase 3 → 4 : after 2 enumeration tools
         """
         if len(output.strip()) < _MIN_OUTPUT_FOR_ADVANCE:
-            return  # empty/error output doesn't count
+            return
 
         self._phase_tools_run[self._phase].add(binary)
 
@@ -246,10 +243,6 @@ class ReflectionEngine:
             )
 
     def _completed_summary(self) -> str:
-        """
-        Build a plain-English list of already-ran tool|target combos to
-        inject into the prompt so the AI never suggests them again.
-        """
         if not self._completed_combos:
             return "none"
         return ", ".join(sorted(self._completed_combos))
@@ -275,7 +268,8 @@ class ReflectionEngine:
         session_context = build_agent_context(self._state)
         mode = self._intensity.get("name", "NORMAL")
 
-        # Bare hostname for tools that can't accept URLs (nmap, whois, dig…)
+        # bare_target is passed to the prompt as a HINT for tools that need it
+        # (nmap, whois, dig). The AI chooses which form to use per tool.
         bare_target = _strip_url(target) if _is_url(target) else target
 
         vuln_summary = ""
@@ -290,7 +284,7 @@ class ReflectionEngine:
 
         prompt = _REFLECT_PROMPT.format(
             tool=tool_name,
-            target=target,
+            target=target,          # full original target (may include https://)
             bare_target=bare_target,
             mode=mode,
             phase_num=phase,
@@ -347,9 +341,6 @@ class ReflectionEngine:
           4. Show + ask user to confirm
           5. Execute, record tool ran → maybe advance phase
           6. Loop
-
-        Phase gating is enforced by _record_tool_ran(), not by the AI.
-        User confirms EVERY execution — never runs blind.
         """
         from kernox.guards.shell_sanitizer import sanitize
         from kernox.features.attack_log import log_tool_run
@@ -371,7 +362,6 @@ class ReflectionEngine:
         current_target = target
         vulns_found: list[dict] = []
 
-        # Track how many consecutive duplicate skips — break if stuck
         consecutive_dupes = 0
         MAX_CONSECUTIVE_DUPES = 3
 
@@ -380,7 +370,7 @@ class ReflectionEngine:
 
             # ── Determine next step ───────────────────────────────────────────
             if is_bootstrap and not has_output:
-                next_step  = _bootstrap_command(tool_name, current_target)
+                next_step    = _bootstrap_command(tool_name, current_target)
                 is_bootstrap = False
             else:
                 next_step = self.reflect(
@@ -420,16 +410,13 @@ class ReflectionEngine:
                         f"duplicate suggestions — stopping chain.[/dim]"
                     )
                     break
-                # Feed the completed list back without burning a step number;
-                # reflect() already has _completed_summary() in the prompt so
-                # the next call will see the updated list and pick something else.
                 current_output = (
                     f"[SYSTEM: {san.binary} already ran on "
                     f"{san.target or current_target}. "
                     f"Pick a DIFFERENT tool from the allowed list.]"
                 )
                 current_tool = san.binary
-                continue  # don't increment step_num
+                continue
 
             consecutive_dupes = 0
             step_num += 1
@@ -453,7 +440,7 @@ class ReflectionEngine:
                 break
 
             # ── Execute ───────────────────────────────────────────────────────
-            step_target = san.target or current_target
+            step_target = next_step.get("args", {}).get("target") or san.target or current_target
             result = executor.run(
                 command      = cmd,
                 tool_name    = san.binary,
@@ -469,7 +456,6 @@ class ReflectionEngine:
             if result.stdout.strip():
                 OutputFormatter.format_output(san.binary, result.stdout, step_target)
 
-            # Save to state
             if output_text.strip():
                 self._state.add_tool_result(
                     tool       = san.binary,
@@ -479,10 +465,8 @@ class ReflectionEngine:
                     raw_output = output_text,
                 )
 
-            # Record tool ran → may advance phase
             self._record_tool_ran(san.binary, output_text)
 
-            # Log to attack timeline
             try:
                 log_tool_run(
                     tool        = san.binary,
@@ -495,7 +479,6 @@ class ReflectionEngine:
             except Exception:
                 pass
 
-            # Advance loop state
             current_output = output_text
             current_tool   = san.binary
             current_target = step_target
