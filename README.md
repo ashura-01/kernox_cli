@@ -30,14 +30,14 @@ $ python -m kernox.cli
 v1.0.0       AI Penetration Testing Agent       2026-05-06
 Type a target (IP/URL), ask a question, or type help for all commands
 
-kernox⮞⮞ scan 192.168.1.0/24
+kernox⮞⮞ scan 192.168.0.209
 
 ┌───┬────────────────────────────────────────────────┬────────────────┐
 │ # │ Command                                        │ Reason         │
 ├───┼────────────────────────────────────────────────┼────────────────┤
-│ 1 │ nmap -sn 192.168.1.0/24                        │ Host discovery │
-│ 2 │ nmap -sV -p- 192.168.1.1                       │ Port scan      │
-│ 3 │ whatweb http://192.168.1.1                     │ Web enum       │
+│ 1 │ nmap -sn 192.168.0.209                         │ Host discovery │
+│ 2 │ nmap -sV -p- 192.168.0.209                     │ Port scan      │
+│ 3 │ whatweb http://192.168.0.209                   │ Web enum       │
 └───┴────────────────────────────────────────────────┴────────────────┘
 
 Execute? [y/n]: y
@@ -124,6 +124,11 @@ On first launch, Kernox will:
 | `clear` | Reset session state |
 | `raw on/off` | Toggle raw ANSI output |
 | `auto [target]` | Autonomous chain (up to 5 steps) |
+| `analyze` | Analyze entire session (all saved outputs) |
+| `analyze last` | Analyze most recent tool output |
+| `analyze <toolname>` | Analyze all outputs from a specific tool |
+| `analyze <ip>` | Analyze all findings for a host IP |
+| `analyze on` / `analyze off` | Toggle auto-analysis after each tool run |
 | `exit` / `quit` | Exit Kernox |
 
 ### Natural Language Examples
