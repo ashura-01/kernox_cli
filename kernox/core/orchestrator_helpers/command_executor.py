@@ -28,7 +28,37 @@ from rich.prompt import Confirm, Prompt
 
 console = Console()
 
-_MAX_CHAIN_DEPTH = 3
+
+def _merge_tool_into_command(step: dict) -> dict:
+    """
+    AI next-step entries have two relevant fields:
+        step["tool"]         — the binary name  (e.g. "wpscan", "nmap")
+        step["args"]["command"] — flags only    (e.g. "--url https://example.com")
+
+    run_shell_step sanitizes and executes args["command"] verbatim, so if the
+    binary is missing from that string the shell receives bare flags and fails.
+
+    This helper returns a *copy* of args with the binary prepended when:
+      - step["tool"] is a real tool name (not "shell" / "bash" / empty)
+      - args["command"] does not already start with that binary name
+    """
+    import copy
+    args = copy.deepcopy(step.get("args", {}))
+    tool = step.get("tool", "").strip().lower()
+    cmd  = args.get("command", "").strip()
+
+    # "shell" / "bash" are meta-values meaning the command is already complete
+    if not tool or tool in ("shell", "bash"):
+        return args
+
+    # Command already starts with the binary — nothing to do
+    cmd_binary = cmd.split()[0].lower() if cmd.split() else ""
+    if cmd_binary == tool:
+        return args
+
+    # Prepend the binary
+    args["command"] = f"{tool} {cmd}".strip() if cmd else tool
+    return args
 
 
 class CommandExecutor:
@@ -40,6 +70,10 @@ class CommandExecutor:
         self._reflection   = None          # injected by Orchestrator
         self._chat_handler = None          # injected by Orchestrator for recording
         self._auto_analyze: bool = True    # toggled by `analyze on / analyze off`
+
+        # Configurable chain depth — how many AI-suggested hops are allowed
+        # before chaining stops.  Override via config["max_chain_depth"].
+        self.max_chain_depth: int = int(config.get("max_chain_depth") or 3)
 
     def run_shell_step(
         self,
@@ -117,16 +151,16 @@ class CommandExecutor:
         # Record output for chat handler so it can answer questions
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         if hasattr(self, '_chat_handler') and self._chat_handler:
-            # Check for output files
             if hasattr(result, 'output_path') and result.output_path:
                 self._chat_handler.record_command(san.command, str(result.output_path))
             else:
-                # Look for .out files (stegseek creates these)
+                # Fallback: scan kernox's own tmp dir rather than cwd so we
+                # don't accidentally pick up unrelated .out files.
                 import glob
                 import os
-                out_files = glob.glob("*.out")
+                kernox_tmp = "/tmp/kernox"
+                out_files = glob.glob(os.path.join(kernox_tmp, "*.out"))
                 if out_files:
-                    # Record the most recent .out file
                     latest_out = max(out_files, key=os.path.getctime)
                     self._chat_handler.record_command(san.command, latest_out)
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -146,10 +180,10 @@ class CommandExecutor:
         # AI analysis — extracts vulns AND structured state in ONE call
         # Guarded by _auto_analyze flag (toggled with `analyze on/off`)
         if (self._ai_analyzer
-                and self._auto_analyze                # ← on-demand toggle guard
+                and self._auto_analyze
                 and result.stdout.strip()
                 and not result.blocked
-                and _chain_depth < _MAX_CHAIN_DEPTH):
+                and _chain_depth < self.max_chain_depth):
             next_steps = self._ai_analyzer.analyze(
                 tool_name  = result.tool_name,
                 target     = target or "unknown",
@@ -165,12 +199,11 @@ class CommandExecutor:
         return result.stdout if (not result.blocked and result.return_code >= 0) else None
 
     def _offer_chain(self, next_steps: list, intensity: dict, depth: int) -> None:
-        """Offer AI-suggested next steps - user picks by number."""
+        """Offer AI-suggested next steps — user picks by number."""
         if not next_steps:
             return
 
         # Steps already printed by OutputFormatter.format_analysis_summary()
-        # Just show the prompt
         console.print()
         choice = Prompt.ask(
             "  Run which?",
@@ -180,25 +213,17 @@ class CommandExecutor:
 
         if choice == "none":
             return
-        elif choice == "all":
-            for step in next_steps:
-                cmd = step.get("args", {}).get("command", "")
-                reason = step.get("reason", "")
-                if cmd:
-                    self.run_shell_step(
-                        step.get("args", {}),
-                        reason,
-                        intensity,
-                        _chain_depth=depth + 1,
-                    )
-        else:
-            idx = int(choice) - 1
-            step = next_steps[idx]
-            cmd = step.get("args", {}).get("command", "")
+
+        selected = next_steps if choice == "all" else [next_steps[int(choice) - 1]]
+
+        for step in selected:
+            # Merge binary into command before execution so the shell always
+            # receives a full command (e.g. "wpscan --url ..." not "--url ...")
+            merged_args = _merge_tool_into_command(step)
             reason = step.get("reason", "")
-            if cmd:
+            if merged_args.get("command"):
                 self.run_shell_step(
-                    step.get("args", {}),
+                    merged_args,
                     reason,
                     intensity,
                     _chain_depth=depth + 1,
