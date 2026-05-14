@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import re
+from kernox.utils.network_ips import get_ip_context
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
@@ -122,8 +123,7 @@ def _extract_json(text: str) -> dict | None:
     text = text.strip()
     if text.startswith("```"):
         text = "\n".join(
-            line for line in text.split("\n")
-            if not line.strip().startswith("```")
+            line for line in text.split("\n") if not line.strip().startswith("```")
         ).strip()
     m = re.search(r"\{.*\}", text, re.DOTALL)
     if not m:
@@ -202,11 +202,16 @@ class ReflectionEngine:
     """
 
     def __init__(self, ai_client, state, intensity: dict):
-        self._ai        = ai_client
-        self._state     = state
+        self._ai = ai_client
+        self._state = state
         self._intensity = intensity
         self._phase: int = 1
-        self._phase_tools_run: dict[int, set[str]] = {1: set(), 2: set(), 3: set(), 4: set()}
+        self._phase_tools_run: dict[int, set[str]] = {
+            1: set(),
+            2: set(),
+            3: set(),
+            4: set(),
+        }
         self._completed_combos: set[str] = set()
 
     def reset_phase(self) -> None:
@@ -231,8 +236,7 @@ class ReflectionEngine:
         thresholds = {1: 1, 2: 1, 3: 2, 4: 99}
         needed = thresholds.get(self._phase, 99)
 
-        if (self._phase < 4
-                and len(self._phase_tools_run[self._phase]) >= needed):
+        if self._phase < 4 and len(self._phase_tools_run[self._phase]) >= needed:
             old = self._phase
             self._phase += 1
             console.print(
@@ -249,9 +253,9 @@ class ReflectionEngine:
 
     def reflect(
         self,
-        tool_name:   str,
-        target:      str,
-        raw_output:  str,
+        tool_name: str,
+        target: str,
+        raw_output: str,
         vulns_found: list[dict] | None = None,
     ) -> dict | None:
         """
@@ -265,6 +269,7 @@ class ReflectionEngine:
             vulns_found = []
 
         from kernox.core.orchestrator_helpers.context_builder import build_agent_context
+
         session_context = build_agent_context(self._state)
         mode = self._intensity.get("name", "NORMAL")
 
@@ -281,10 +286,10 @@ class ReflectionEngine:
             )
 
         phase = self._phase
-
+        ip_context = get_ip_context()
         prompt = _REFLECT_PROMPT.format(
             tool=tool_name,
-            target=target,          # full original target (may include https://)
+            target=target,  # full original target (may include https://)
             bare_target=bare_target,
             mode=mode,
             phase_num=phase,
@@ -294,11 +299,14 @@ class ReflectionEngine:
             vuln_summary=vuln_summary,
             context=(session_context or "")[:400],
             output=raw_output[:3000],
+            ip_context=ip_context,
         )
 
         try:
-            with Live(Spinner("dots", text="[cyan]Reflecting...[/cyan]"),
-                      refresh_per_second=10):
+            with Live(
+                Spinner("dots", text="[cyan]Reflecting...[/cyan]"),
+                refresh_per_second=10,
+            ):
                 response = self._ai.chat(
                     messages=[{"role": "user", "content": prompt}],
                     system=_REFLECTION_SYSTEM,
@@ -325,11 +333,11 @@ class ReflectionEngine:
     def autonomous_chain(
         self,
         initial_output: str,
-        tool_name:      str,
-        target:         str,
-        intensity:      dict,
+        tool_name: str,
+        target: str,
+        intensity: dict,
         executor,
-        max_steps:      int = 5,
+        max_steps: int = 5,
     ) -> None:
         """
         Autonomous multi-step attack chain.
@@ -354,11 +362,11 @@ class ReflectionEngine:
             f"[dim](max {max_steps} steps, confirm each)[/dim]"
         )
 
-        is_bootstrap = (tool_name == "init")
-        has_output   = bool(initial_output and initial_output.strip())
+        is_bootstrap = tool_name == "init"
+        has_output = bool(initial_output and initial_output.strip())
 
         current_output = initial_output
-        current_tool   = tool_name
+        current_tool = tool_name
         current_target = target
         vulns_found: list[dict] = []
 
@@ -370,21 +378,21 @@ class ReflectionEngine:
 
             # ── Determine next step ───────────────────────────────────────────
             if is_bootstrap and not has_output:
-                next_step    = _bootstrap_command(tool_name, current_target)
+                next_step = _bootstrap_command(tool_name, current_target)
                 is_bootstrap = False
             else:
                 next_step = self.reflect(
-                    tool_name   = current_tool,
-                    target      = current_target,
-                    raw_output  = current_output,
-                    vulns_found = vulns_found,
+                    tool_name=current_tool,
+                    target=current_target,
+                    raw_output=current_output,
+                    vulns_found=vulns_found,
                 )
 
             if not next_step:
                 console.print("[dim cyan]⟳ Agent: nothing more to do.[/dim cyan]")
                 break
 
-            cmd    = next_step.get("args", {}).get("command", "")
+            cmd = next_step.get("args", {}).get("command", "")
             reason = next_step.get("reason", "")
 
             if not cmd:
@@ -393,7 +401,9 @@ class ReflectionEngine:
             # ── Sanitize ──────────────────────────────────────────────────────
             san = sanitize(cmd, None)
             if not san.allowed:
-                console.print(f"[dim]⚠ Agent proposed blocked command: {san.reason}[/dim]")
+                console.print(
+                    f"[dim]⚠ Agent proposed blocked command: {san.reason}[/dim]"
+                )
                 break
 
             # ── Dedup check ───────────────────────────────────────────────────
@@ -428,25 +438,29 @@ class ReflectionEngine:
             )
             if reason:
                 console.print(f"[dim cyan]{reason}[/dim cyan]")
-            console.print(Panel(
-                Markdown(f"```bash\n{cmd}\n```"),
-                width=80,
-                border_style="dim",
-                box=box.MINIMAL,
-            ))
+            console.print(
+                Panel(
+                    Markdown(f"```bash\n{cmd}\n```"),
+                    width=80,
+                    border_style="dim",
+                    box=box.MINIMAL,
+                )
+            )
 
             if not Confirm.ask("  Run this step?", default=True):
                 console.print("[dim]Chain stopped by user.[/dim]")
                 break
 
             # ── Execute ───────────────────────────────────────────────────────
-            step_target = next_step.get("args", {}).get("target") or san.target or current_target
+            step_target = (
+                next_step.get("args", {}).get("target") or san.target or current_target
+            )
             result = executor.run(
-                command      = cmd,
-                tool_name    = san.binary,
-                target       = step_target,
-                timeout      = intensity.get("timeout", 120),
-                skip_confirm = True,
+                command=cmd,
+                tool_name=san.binary,
+                target=step_target,
+                timeout=intensity.get("timeout", 120),
+                skip_confirm=True,
             )
 
             self._completed_combos.add(combo_key)
@@ -458,32 +472,34 @@ class ReflectionEngine:
 
             if output_text.strip():
                 self._state.add_tool_result(
-                    tool       = san.binary,
-                    target     = step_target,
-                    parsed     = {"exit_code": result.return_code,
-                                  "duration":  result.duration_seconds},
-                    raw_output = output_text,
+                    tool=san.binary,
+                    target=step_target,
+                    parsed={
+                        "exit_code": result.return_code,
+                        "duration": result.duration_seconds,
+                    },
+                    raw_output=output_text,
                 )
 
             self._record_tool_ran(san.binary, output_text)
 
             try:
                 log_tool_run(
-                    tool        = san.binary,
-                    command     = cmd,
-                    target      = step_target,
-                    duration    = result.duration_seconds,
-                    return_code = result.return_code,
-                    output_path = str(result.output_path or ""),
+                    tool=san.binary,
+                    command=cmd,
+                    target=step_target,
+                    duration=result.duration_seconds,
+                    return_code=result.return_code,
+                    output_path=str(result.output_path or ""),
                 )
             except Exception:
                 pass
 
             current_output = output_text
-            current_tool   = san.binary
+            current_tool = san.binary
             current_target = step_target
-            has_output     = True
-            vulns_found    = []
+            has_output = True
+            vulns_found = []
 
             if result.blocked or result.return_code < 0:
                 console.print("[dim]Step failed — stopping chain.[/dim]")

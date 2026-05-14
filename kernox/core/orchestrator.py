@@ -24,7 +24,7 @@ from kernox.config.config_store import ConfigStore
 from kernox.engine.state import SessionState
 from kernox.engine.state_updater import StateUpdater
 from kernox.tools.mail_crawler import MailCrawlerTool
-
+from kernox.utils.network_ips import get_ip_context
 from kernox.core.orchestrator_helpers import (
     ChatHandler,
     CommandExecutor,
@@ -92,6 +92,7 @@ RULES:
 - Do NOT suggest report/pdf/export — that is handled by the user separately
 - When user asks for code/snippet without "execute/run/save/create file": set is_chat:true and put code in message field with no steps"""
 
+ip_context = get_ip_context()
 
 
 class Orchestrator:
@@ -259,6 +260,8 @@ class Orchestrator:
         from kernox.core.orchestrator_helpers.context_builder import build_agent_context
         raw_memory = build_agent_context(self._state)
         memory = raw_memory[:2000] if raw_memory else ""
+        if ip_context and ip_context != "No active network interfaces found.":
+            memory = f"{memory}\n\n{ip_context}"
 
         system_prompt = BASE_SYSTEM_PROMPT.format(
             mode_number=mode_number,
