@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "AI-Powered Security Automation CLI for ethical hackers"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { text = "LICENSE" }
 
 authors = [
     { name = "Kernox Contributors" }

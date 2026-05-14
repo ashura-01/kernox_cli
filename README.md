@@ -244,7 +244,7 @@ kernox --version          # Show version
 
 ## License
 
-**For authorized security testing only.**
+MIT License – see [LICENSE](LICENSE) file for details.
 
 ---
 
