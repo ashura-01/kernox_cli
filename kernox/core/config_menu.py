@@ -34,9 +34,11 @@ def open_config_menu() -> None:
         console.print("  [green]7[/green] – Delete a stored key")
         console.print("  [green]8[/green] – Update NVD API key  [dim](CVE enrichment)[/dim]")
         console.print("  [green]9[/green] – Update VirusTotal API key")
+        console.print("  [green]10[/green] – Setup Telegram bot  [dim](send reports to phone)[/dim]")
+        console.print("  [green]11[/green] – Remove Telegram token")
         console.print("  [green]q[/green] – Quit config menu\n")
 
-        choice = Prompt.ask("Select option", choices=["1","2","3","4","5","6","7","8","9","q"])
+        choice = Prompt.ask("Select option", choices=["1","2","3","4","5","6","7","8","9","10","11","q"])
 
         if choice == "q":
             console.print("[dim cyan]Exiting config menu.[/dim cyan]")
@@ -59,6 +61,10 @@ def open_config_menu() -> None:
             _update_enrichment_key(ks, "nvd_api_key", "NVD (nvd.nist.gov)")
         elif choice == "9":
             _update_enrichment_key(ks, "virustotal_api_key", "VirusTotal")
+        elif choice == "10":
+            _setup_telegram(cfg, ks)
+        elif choice == "11":
+            _remove_telegram(cfg, ks)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -166,3 +172,55 @@ def _update_enrichment_key(ks: KeyStore, key_name: str, label: str) -> None:
         console.print(f"[green]✓ {label} key updated.[/green]\n")
     else:
         console.print("[dim cyan]Unchanged.[/dim cyan]\n")
+
+
+def _setup_telegram(cfg: ConfigStore, ks: KeyStore) -> None:
+    """Setup Telegram bot token and chat ID."""
+    console.print("\n[bold cyan]Telegram Bot Setup[/bold cyan]")
+    console.print("\n[dim]Quick setup guide:[/dim]")
+    console.print("  [dim]1. Open Telegram → search @BotFather → /newbot → create a bot[/dim]")
+    console.print("  [dim]2. Copy the bot token[/dim]")
+    console.print("  [dim]3. Search @userinfobot → /start → get your chat ID[/dim]\n")
+
+    bot_token = secure_prompt("Enter Telegram bot token (input hidden)")
+    if not bot_token:
+        console.print("[dim]Telegram setup cancelled[/dim]\n")
+        return
+
+    chat_id = Prompt.ask("Enter your chat ID")
+    if not chat_id:
+        console.print("[dim]Chat ID required. Setup cancelled.[/dim]\n")
+        return
+
+    ks.store("telegram_bot_token", bot_token)
+    cfg.set("telegram_chat_id", chat_id)
+    cfg.set("telegram_enabled", "1")
+
+    # Test connection
+    try:
+        import requests
+        url = f"https://api.telegram.org/bot{bot_token}/getMe"
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            console.print("[green]✓ Telegram configured and verified![/green]\n")
+
+            # Send test message
+            test_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            test_payload = {"chat_id": chat_id, "text": "✓Kernox Telegram notifications enabled!"}
+            requests.post(test_url, json=test_payload, timeout=5)
+            console.print("[green]✓ Test message sent to your Telegram[/green]\n")
+        else:
+            console.print("[yellow]⚠ Bot token may be invalid. Check and try again.[/yellow]\n")
+    except Exception as e:
+        console.print(f"[yellow]⚠ Could not verify bot: {e}[/yellow]")
+        console.print("[dim]Settings saved but not verified[/dim]\n")
+
+
+def _remove_telegram(cfg: ConfigStore, ks: KeyStore) -> None:
+    """Remove Telegram configuration."""
+    if Confirm.ask("Remove Telegram configuration?", default=False):
+        ks.delete("telegram_bot_token")
+        cfg.set("telegram_enabled", "0")
+        console.print("[green]✓ Telegram configuration removed[/green]\n")
+    else:
+        console.print("[dim]Cancelled[/dim]\n")

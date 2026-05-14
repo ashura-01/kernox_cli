@@ -38,6 +38,8 @@ from kernox.core.orchestrator_helpers import (
 from kernox.core.orchestrator_helpers.chat_handler import detect_builtin
 # ── NEW: on-demand analyzer ──────────────────────────────────────────────────
 from kernox.core.orchestrator_helpers.on_demand_analyzer import OnDemandAnalyzer
+#---------telegram bot----------
+from kernox.utils.telegram_helper import send_output, send_report, send_file
 
 console = Console()
 PROMPT_STYLE = Style.from_dict({"prompt": "bold cyan"})
@@ -225,6 +227,25 @@ class Orchestrator:
                 else:
                     self._on_demand_analyzer.run(rest); continue
 
+            elif cmd.startswith("send"):
+                rest = user_input[4:].strip().lower()
+
+                if rest in ("output", "out"):
+                    send_output()
+
+                elif rest in ("report", "rep"):
+                    send_report()
+
+                elif rest:
+                    send_file(rest)
+
+                else:
+                    console.print(
+                        "[dim]Usage: send output | send report | send <filepath>[/dim]"
+                    )
+
+                continue
+
             builtin = detect_builtin(user_input)
             if builtin == "report":
                 self._report_handler.ask_report(); continue
@@ -244,6 +265,7 @@ class Orchestrator:
                 self._feature_handler.cve(); continue
             elif builtin == "mode":
                 self._show_mode_picker(); continue
+
 
             self._auto_detect_intensity(user_input)
             self._process(user_input)
