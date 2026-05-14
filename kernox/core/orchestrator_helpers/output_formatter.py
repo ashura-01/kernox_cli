@@ -54,7 +54,7 @@ C = {
 SEV_COLORS = {
     "critical": ("#ff6b6b", True),
     "high":     ("red",     True),
-    "medium":   ("#00b894", False),
+    "medium":   ("#ffee00", False),
     "low":      ("cyan",    False),
     "info":     ("dim white", False),
 }
