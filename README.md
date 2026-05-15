@@ -129,6 +129,9 @@ On first launch, Kernox will:
 | `analyze <toolname>` | Analyze all outputs from a specific tool |
 | `analyze <ip>` | Analyze all findings for a host IP |
 | `analyze on` / `analyze off` | Toggle auto-analysis after each tool run |
+| `send output` | Send tool output files to Telegram |
+| `send report` | Send PDF report to Telegram |
+| `send <filepath>` | Send any file to Telegram |
 | `exit` / `quit` | Exit Kernox |
 
 ### Natural Language Examples
