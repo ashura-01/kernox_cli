@@ -53,7 +53,7 @@ class StateManager:
             _stat(self._intensity["name"], "mode", "dim cyan"),
         )
         console.print(Panel(stats, title="[bold cyan]Session State[/bold cyan]",
-                            border_style="cyan", box=box.ROUNDED))
+                            border_style="cyan",width=80, box=box.ROUNDED))
 
         # ── Hosts table ───────────────────────────────────────────────────────
         if hosts:

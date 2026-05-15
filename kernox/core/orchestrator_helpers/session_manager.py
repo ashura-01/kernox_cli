@@ -36,7 +36,7 @@ class SessionManager:
         table.add_column("#", width=4)
         table.add_column("Session file", style="white")
         table.add_column("Size", style="dim", width=8)
-        for i, p in enumerate(sessions[:10], 1):
+        for i, p in enumerate(sessions, 1):
             table.add_row(str(i), p.stem, f"{p.stat().st_size // 1024}KB")
         console.print(table)
 
