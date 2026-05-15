@@ -487,6 +487,9 @@ class Orchestrator:
             ("analyze <toolname>",              "analyze all outputs from a specific tool"),
             ("analyze <ip>",                    "analyze all findings for a host IP"),
             ("analyze on / analyze off",        "toggle auto-analysis after each tool run"),
+            ("send output",                     "send tool output files to Telegram"),
+            ("send report",                     "send PDF report to Telegram"),
+            ("send <filepath>",                 "send any file to Telegram"),
         ]
         for cmd, desc in rows:
             t.add_row(cmd, desc)
