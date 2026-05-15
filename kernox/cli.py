@@ -6,7 +6,8 @@ from __future__ import annotations
 import argparse
 import sys
 from datetime import datetime
-
+from pathlib import Path
+import tomllib
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
@@ -29,7 +30,14 @@ REQUIRED_PACKAGES = {
     "reportlab": "reportlab",
 }
 
-VERSION = "1.0.0"
+def get_version() -> str:
+    pyproject = Path(__file__).parent.parent / "pyproject.toml"
+    if pyproject.exists():
+        data = tomllib.loads(pyproject.read_text())
+        return data.get("project", {}).get("version", "0.0.0")
+    return "0.0.0"
+
+VERSION = get_version()
 
 BANNER = """\
  ██ ▄█▀▓█████  ██▀███   ███▄    █  ▒█████  ▒██   ██▒
@@ -56,8 +64,8 @@ def print_banner() -> None:
     t.add_column(style="dim")
     t.add_row(
         f"[cyan]v{VERSION}[/cyan]",
-        "[#00b894]    AI Penetration Testing Agent[/#00b894]",
-        f"[dim]    {datetime.now().strftime('%Y-%m-%d')}[/dim]",
+        "[#00b894]  |   AI Penetration Testing Agent[/#00b894]",
+        f"[dim]|  {datetime.now().strftime('%Y-%m-%d')}[/dim]",
     )
     console.print(Align(t, align="left"))
     console.print(
