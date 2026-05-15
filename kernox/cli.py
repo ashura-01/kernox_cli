@@ -64,7 +64,7 @@ def print_banner() -> None:
     t.add_column(style="dim")
     t.add_row(
         f"[cyan]v{VERSION}[/cyan]",
-        "[#00b894]  |   AI Penetration Testing Agent[/#00b894]",
+        "[#00b894]|   AI Penetration Testing Agent[/#00b894]",
         f"[dim]|  {datetime.now().strftime('%Y-%m-%d')}[/dim]",
     )
     console.print(Align(t, align="left"))
