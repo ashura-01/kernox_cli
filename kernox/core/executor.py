@@ -1,12 +1,3 @@
-"""
-kernox.core.executor – Safe subprocess wrapper.
-
-Handles three execution modes:
-  1. Normal    – subprocess.Popen with optional spinner
-  2. Streaming – live stdout line-by-line (raw on)
-  3. PTY       – full pseudo-terminal for interactive tools (msfconsole, etc.)
-"""
-
 from __future__ import annotations
 
 import os
@@ -35,8 +26,6 @@ console = Console()
 TMP_OUTPUT_DIR = Path("/tmp/kernox")
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
 def _ensure_tmp() -> None:
     TMP_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -52,15 +41,15 @@ def _save_output(binary: str, target: str, output: str) -> Path:
 
 
 def check_tool_installed(binary: str) -> tuple[bool, Optional[str]]:
-    """Check if a binary is in PATH. Returns (found, install_hint)."""
     if shutil.which(binary):
         return True, None
 
-    # Ask apt-cache for the package name
     try:
         r = subprocess.run(
             ["apt-cache", "search", "--names-only", binary],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if r.returncode == 0 and r.stdout.strip():
             pkg = r.stdout.strip().split("\n")[0].split(" ")[0]
@@ -72,27 +61,18 @@ def check_tool_installed(binary: str) -> tuple[bool, Optional[str]]:
 
 
 def _prime_sudo() -> bool:
-    # Fast path: already cached
-    check = subprocess.run(
-        ["sudo", "-n", "-v"],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-    )
-    if check.returncode == 0:
-        return True
+    try:
+        if subprocess.run(["sudo", "-n", "-v"], stdin=subprocess.DEVNULL, capture_output=True).returncode == 0:
+            return True
+    except Exception:
+        pass
 
     if not sys.stdin.isatty():
-        console.print(
-            "[red]✗ No TTY available — cannot prompt for sudo password.[/red]\n"
-            "[dim]  Run kernox in an interactive terminal.[/dim]"
-        )
+        console.print("[red]✗ No TTY available — cannot prompt for sudo password.[/red]")
         return False
 
     console.print("\n[bold cyan] sudo password required[/bold cyan]")
 
-    # Use a real subprocess with inherited stdio instead of pty.spawn.
-    # This gives sudo a proper TTY (the user's terminal) without the
-    # pty.spawn race condition and missing exit code problems.
     try:
         result = subprocess.run(
             ["sudo", "-v"],
@@ -100,49 +80,40 @@ def _prime_sudo() -> bool:
             stdout=sys.stdout,
             stderr=sys.stderr,
         )
-    except OSError as exc:
-        console.print(f"[red]✗ Failed to invoke sudo: {exc}[/red]")
+    except Exception:
         return False
 
     if result.returncode != 0:
-        console.print("[red]✗ sudo authentication failed or was cancelled.[/red]")
         return False
 
-    # Brief pause to ensure the timestamp file is flushed to disk
     time.sleep(0.1)
 
-    # Final sanity check
-    verify = subprocess.run(
-        ["sudo", "-n", "-v"],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-    )
-    if verify.returncode != 0:
-        console.print("[red]✗ sudo credentials did not persist.[/red]")
+    try:
+        verify = subprocess.run(
+            ["sudo", "-n", "-v"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+        )
+        return verify.returncode == 0
+    except Exception:
         return False
 
-    return True
-
-
-# ── Result dataclass ──────────────────────────────────────────────────────────
 
 @dataclass
 class ExecutionResult:
-    command:          str
-    stdout:           str
-    stderr:           str
-    return_code:      int
+    command: str
+    stdout: str
+    stderr: str
+    return_code: int
     duration_seconds: float
-    tool_name:        str
-    target:           str = ""
-    output_path:      Optional[Path] = None
-    blocked:          bool = False
-    block_reason:     str = ""
-    interrupted:      bool = False
-    used_sudo:        bool = False
+    tool_name: str
+    target: str = ""
+    output_path: Optional[Path] = None
+    blocked: bool = False
+    block_reason: str = ""
+    interrupted: bool = False
+    used_sudo: bool = False
 
-
-# ── Executor ──────────────────────────────────────────────────────────────────
 
 class Executor:
     def __init__(self, config: ConfigStore) -> None:
@@ -150,47 +121,35 @@ class Executor:
 
     def run(
         self,
-        command:        str,
+        command: str,
         *,
-        tool_name:      str           = "unknown",
-        target:         Optional[str] = None,
-        timeout:        int           = 120,
-        stream_output:  bool          = False,
-        skip_confirm:   bool          = False,
-        use_sudo:       Optional[bool] = None,
+        tool_name: str = "unknown",
+        target: Optional[str] = None,
+        timeout: int = 120,
+        stream_output: bool = False,
+        skip_confirm: bool = False,
+        use_sudo: Optional[bool] = None,
     ) -> ExecutionResult:
 
-        # ── 1. Sanitize ───────────────────────────────────────────────────────
         san = sanitize(command, self._cfg)
         if not san.allowed:
             console.print(f"[red]✗ Blocked: {san.reason}[/red]")
             return _blocked(command, tool_name, target or "", san.reason)
 
-        final_cmd  = san.command
-        binary     = san.binary
+        final_cmd = san.command
+        binary = san.binary
         det_target = san.target or target or ""
 
-        # ── 2. Tool installed? ────────────────────────────────────────────────
-        # For sudo-prefixed commands, check the inner binary
-        check_bin = binary
-        if final_cmd.strip().startswith("sudo "):
-            parts = shlex.split(final_cmd)
-            check_bin = parts[1] if len(parts) > 1 else binary
+        parts = shlex.split(final_cmd) if final_cmd else []
+        already_sudo = bool(parts) and parts[0] == "sudo"
+
+        check_bin = parts[1] if already_sudo and len(parts) > 1 else binary
 
         installed, hint = check_tool_installed(check_bin)
         if not installed:
-            msg = f"[red]✗ '{check_bin}' not found.[/red]"
-            if hint:
-                msg += f"\n  [dim]Install:[/dim] [cyan]{hint}[/cyan]"
-            console.print(msg)
-            return _blocked(command, tool_name, det_target,
-                            f"'{check_bin}' not installed")
+            return _blocked(command, tool_name, det_target, f"{check_bin} not installed")
 
-        # ── 3. Sudo handling ──────────────────────────────────────────────────
         needs_sudo = san.needs_sudo if use_sudo is None else use_sudo
-
-        # Don't double-prepend if already has sudo
-        already_sudo = final_cmd.strip().startswith("sudo ")
 
         if needs_sudo and not already_sudo:
             if not skip_confirm:
@@ -202,43 +161,29 @@ class Executor:
                 final_cmd = f"sudo {final_cmd}"
                 already_sudo = True
 
-        # ── 3b. Prime sudo credentials before non-PTY execution ──────────────
-        # subprocess.Popen has no TTY so sudo would hang waiting for a password.
-        # We use a PTY-based `sudo -v` to interactively cache the credentials
-        # first, then the real command can run non-interactively via PIPE.
         if already_sudo and not san.needs_pty:
             if not _prime_sudo():
-                return _blocked(
-                    command, tool_name, det_target,
-                    "sudo authentication failed or was cancelled",
-                )
+                return _blocked(command, tool_name, det_target, "sudo authentication failed")
 
-        # ── 4. Raw output toggle ──────────────────────────────────────────────
-        # Always respect the live config value — reads from SQLite each time
         if not stream_output:
             stream_output = self._cfg.get("show_raw_output") == "1"
 
-        # ── 5. Confirmation ───────────────────────────────────────────────────
         console.print(f"\n[dim]$ {final_cmd}[/dim]")
 
-        # ── 6. Execute ────────────────────────────────────────────────────────
         start = time.monotonic()
 
         if san.needs_pty:
             return self._run_pty(final_cmd, binary, det_target, tool_name, start)
         elif stream_output:
-            return self._run_streaming(final_cmd, binary, det_target,
-                                       tool_name, timeout, start, already_sudo)
+            return self._run_streaming(final_cmd, binary, det_target, tool_name, timeout, start, already_sudo)
         else:
-            return self._run_normal(final_cmd, binary, det_target,
-                                    tool_name, timeout, start, already_sudo)
+            return self._run_normal(final_cmd, binary, det_target, tool_name, timeout, start, already_sudo)
 
-    # ── Execution modes ───────────────────────────────────────────────────────
-
-    def _run_normal(self, cmd, binary, target, tool_name, timeout, start,
-                    used_sudo) -> ExecutionResult:
+    def _run_normal(self, cmd, binary, target, tool_name, timeout, start, used_sudo):
         stdout_buf, stderr_buf = [], []
         interrupted = False
+        proc = None
+
         try:
             proc = subprocess.Popen(
                 shlex.split(cmd),
@@ -246,40 +191,38 @@ class Executor:
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            try:
-                with Live(
-                    Spinner("dots", text=f"[cyan]Running {binary}...[/cyan]"),
-                    refresh_per_second=10,
-                ):
-                    out, err = proc.communicate(timeout=timeout)
+
+            out, err = proc.communicate(timeout=timeout)
+            stdout_buf.append(out or "")
+            stderr_buf.append(err or "")
+
+        except subprocess.TimeoutExpired:
+            if proc:
+                proc.kill()
+                out, err = proc.communicate()
                 stdout_buf.append(out or "")
                 stderr_buf.append(err or "")
-            except KeyboardInterrupt:
-                proc.terminate()
-                try:
-                    out, err = proc.communicate(timeout=5)
-                    stdout_buf.append(out or "")
-                    stderr_buf.append(err or "")
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.communicate()
-                interrupted = True
-        except FileNotFoundError:
-            return _blocked(cmd, tool_name, target, f"'{binary}' not in PATH")
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.communicate()
             return _timeout(cmd, tool_name, target, timeout)
+
+        except KeyboardInterrupt:
+            if proc:
+                proc.terminate()
+                out, err = proc.communicate()
+                stdout_buf.append(out or "")
+                stderr_buf.append(err or "")
+            interrupted = True
+
+        rc = proc.returncode if proc else -1
 
         return self._finish(cmd, binary, target, tool_name, start,
                             "".join(stdout_buf), "".join(stderr_buf),
-                            proc.returncode if not interrupted else -2,
-                            interrupted, used_sudo)
+                            rc, interrupted, used_sudo)
 
-    def _run_streaming(self, cmd, binary, target, tool_name, timeout, start,
-                       used_sudo) -> ExecutionResult:
+    def _run_streaming(self, cmd, binary, target, tool_name, timeout, start, used_sudo):
         stdout_buf, stderr_buf = [], []
+        proc = None
         interrupted = False
+
         try:
             proc = subprocess.Popen(
                 shlex.split(cmd),
@@ -287,94 +230,87 @@ class Executor:
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            try:
-                for line in proc.stdout:
-                    console.print(line, end="")
-                    stdout_buf.append(line)
-                proc.wait(timeout=timeout)
-                err = proc.stderr.read()
-                if err:
-                    stderr_buf.append(err)
-            except KeyboardInterrupt:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
+
+            start_t = time.time()
+
+            while True:
+                if proc.stdout:
+                    line = proc.stdout.readline()
+                    if line:
+                        console.print(line, end="")
+                        stdout_buf.append(line)
+
+                if proc.poll() is not None:
+                    break
+
+                if time.time() - start_t > timeout:
                     proc.kill()
-                interrupted = True
-        except FileNotFoundError:
-            return _blocked(cmd, tool_name, target, f"'{binary}' not in PATH")
+                    return _timeout(cmd, tool_name, target, timeout)
+
+        except KeyboardInterrupt:
+            if proc:
+                proc.terminate()
+            interrupted = True
+
+        rc = proc.returncode if proc else -1
 
         return self._finish(cmd, binary, target, tool_name, start,
                             "".join(stdout_buf), "".join(stderr_buf),
-                            proc.returncode if not interrupted else -2,
-                            interrupted, used_sudo)
+                            rc, interrupted, used_sudo)
 
-    def _run_pty(self, cmd, binary, target, tool_name, start) -> ExecutionResult:
-        """Full PTY passthrough for interactive tools (msfconsole, etc.)."""
-        console.print(
-            f"[bold cyan]⚡ Launching {binary} in interactive mode[/bold cyan]\n"
-            "[dim]Press Ctrl+C to exit back to kernox[/dim]\n"
-        )
+    def _run_pty(self, cmd, binary, target, tool_name, start):
+        console.print(f"[bold cyan]⚡ Launching {binary} in interactive mode[/bold cyan]\n")
         buf = []
-        try:
-            master_fd, slave_fd = pty.openpty()
-            proc = subprocess.Popen(
-                shlex.split(cmd),
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                close_fds=True,
-            )
-            os.close(slave_fd)
+        master_fd, slave_fd = pty.openpty()
 
-            # Save terminal settings
-            import tty, termios
-            old_settings = termios.tcgetattr(sys.stdin.fileno())
-            try:
-                tty.setraw(sys.stdin.fileno())
-                while proc.poll() is None:
-                    r, _, _ = select.select([master_fd, sys.stdin], [], [], 0.05)
-                    if master_fd in r:
-                        try:
-                            data = os.read(master_fd, 1024)
-                            if data:
-                                os.write(sys.stdout.fileno(), data)
-                                buf.append(data.decode("utf-8", errors="replace"))
-                        except OSError:
-                            break
-                    if sys.stdin in r:
-                        data = os.read(sys.stdin.fileno(), 1024)
-                        if data:
-                            os.write(master_fd, data)
-            finally:
-                termios.tcsetattr(sys.stdin.fileno(),
-                                  termios.TCSADRAIN, old_settings)
+        proc = subprocess.Popen(
+            shlex.split(cmd),
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+
+        import tty, termios
+        old_settings = termios.tcgetattr(sys.stdin.fileno())
+
+        try:
+            tty.setraw(sys.stdin.fileno())
+
+            while proc.poll() is None:
+                r, _, _ = select.select([master_fd, sys.stdin], [], [], 0.05)
+
+                if master_fd in r:
+                    data = os.read(master_fd, 1024)
+                    if data:
+                        os.write(sys.stdout.fileno(), data)
+                        buf.append(data.decode("utf-8", errors="replace"))
+
+                if sys.stdin in r:
+                    data = os.read(sys.stdin.fileno(), 1024)
+                    if data:
+                        os.write(master_fd, data)
+
+        finally:
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_settings)
             os.close(master_fd)
-        except KeyboardInterrupt:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
 
         output = "".join(buf)
-        duration = time.monotonic() - start
-        output_path = None
-        if output.strip():
-            output_path = _save_output(binary, target or "interactive", output)
-            console.print(f"\n[dim]saved → {output_path}[/dim]")
 
-        console.print(f"\n[green]✓[/green] [dim]{binary} session ended ({duration:.1f}s)[/dim]")
         return ExecutionResult(
-            command=cmd, stdout=output, stderr="",
+            command=cmd,
+            stdout=output,
+            stderr="",
             return_code=proc.returncode or 0,
-            duration_seconds=duration,
-            tool_name=tool_name, target=target or "",
-            output_path=output_path,
+            duration_seconds=time.monotonic() - start,
+            tool_name=tool_name,
+            target=target or "",
         )
 
     def _finish(self, cmd, binary, target, tool_name, start,
-                stdout, stderr, rc, interrupted, used_sudo) -> ExecutionResult:
+                stdout, stderr, rc, interrupted, used_sudo):
+
         duration = time.monotonic() - start
         full_output = (stdout + stderr).strip()
 
@@ -391,32 +327,22 @@ class Executor:
             console.print(f"[cyan]⚠[/cyan] [dim]{binary} exited {rc} ({duration:.1f}s)[/dim]")
 
         return ExecutionResult(
-            command=cmd, stdout=stdout, stderr=stderr,
-            return_code=rc, duration_seconds=duration,
-            tool_name=tool_name, target=target or "",
+            command=cmd,
+            stdout=stdout,
+            stderr=stderr,
+            return_code=rc,
+            duration_seconds=duration,
+            tool_name=tool_name,
+            target=target or "",
             output_path=output_path,
-            interrupted=interrupted, used_sudo=used_sudo,
+            interrupted=interrupted,
+            used_sudo=used_sudo,
         )
 
 
-# ── Convenience constructors ──────────────────────────────────────────────────
-
-def _blocked(cmd, tool_name, target, reason) -> ExecutionResult:
-    return ExecutionResult(
-        command=cmd, stdout="", stderr=reason,
-        return_code=-1, duration_seconds=0.0,
-        tool_name=tool_name, target=target,
-        blocked=True, block_reason=reason,
-    )
+def _blocked(cmd, tool_name, target, reason):
+    return ExecutionResult(cmd, "", reason, -1, 0.0, tool_name, target, blocked=True, block_reason=reason)
 
 
-def _timeout(cmd, tool_name, target, timeout) -> ExecutionResult:
-    return ExecutionResult(
-        command=cmd, stdout="", stderr=f"Timed out after {timeout}s",
-        return_code=-1, duration_seconds=float(timeout),
-        tool_name=tool_name, target=target,
-    )
-
-
-def _dim(m: str) -> None:
-    console.print(f"[dim]{m}[/dim]")
+def _timeout(cmd, tool_name, target, timeout):
+    return ExecutionResult(cmd, "", f"Timed out after {timeout}s", -1, float(timeout), tool_name, target)

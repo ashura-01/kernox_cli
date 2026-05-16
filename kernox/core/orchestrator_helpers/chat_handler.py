@@ -135,7 +135,7 @@ class ChatHandler:
         return "No output files found. Run a command first."
 
     def record_command(self, command: str, output_file: str):
-        print(f"[DEBUG] Recording: {command} -> {output_file}")
+        # print(f"[DEBUG] Recording: {command} -> {output_file}")
         self._command_history.append({
             'command': command,
             'output_file': output_file,

@@ -248,33 +248,33 @@ def clean(raw: str, max_lines: int = 80) -> str:
 
 
 
-if __name__ == "__main__":
-    sample = """
-\x1b[1;32mStarting Nmap 7.94\x1b[0m
-⠙ Scanning 192.168.1.1...
-[DEBUG] raw socket ok
-[INFO] resolving host
-Nmap scan report for 192.168.1.1
-Host is up (0.0023s latency).
+# if __name__ == "__main__":
+#     sample = """
+# \x1b[1;32mStarting Nmap 7.94\x1b[0m
+# ⠙ Scanning 192.168.1.1...
+# [DEBUG] raw socket ok
+# [INFO] resolving host
+# Nmap scan report for 192.168.1.1
+# Host is up (0.0023s latency).
 
-PORT     STATE    SERVICE  VERSION
-22/tcp   open     ssh      OpenSSH 8.9
-80/tcp   open     http     Apache 2.4.52
-443/tcp  open     https    Apache 2.4.52
-3306/tcp closed   mysql
-8080/tcp filtered http-proxy
+# PORT     STATE    SERVICE  VERSION
+# 22/tcp   open     ssh      OpenSSH 8.9
+# 80/tcp   open     http     Apache 2.4.52
+# 443/tcp  open     https    Apache 2.4.52
+# 3306/tcp closed   mysql
+# 8080/tcp filtered http-proxy
 
-|_CVE-2023-38408: VULNERABLE OpenSSH pre-auth RCE [CRITICAL]
-|_smb-vuln-ms17-010: VULNERABLE (MS17-010 EternalBlue) [HIGH]
+# |_CVE-2023-38408: VULNERABLE OpenSSH pre-auth RCE [CRITICAL]
+# |_smb-vuln-ms17-010: VULNERABLE (MS17-010 EternalBlue) [HIGH]
 
-Host script results:
-| smb-security-mode:
-|   account_used: guest
+# Host script results:
+# | smb-security-mode:
+# |   account_used: guest
 
-============================================
-============================================
-Nmap done: 1 IP address scanned in 12.34 seconds
-"""
-    result = OutputCleaner.clean(sample)
-    print(result.text)
-    print(f"\ntool={result.tool}  target={result.target}  findings={len(result.findings)}")
+# ============================================
+# ============================================
+# Nmap done: 1 IP address scanned in 12.34 seconds
+# """
+#     result = OutputCleaner.clean(sample)
+#     print(result.text)
+#     print(f"\ntool={result.tool}  target={result.target}  findings={len(result.findings)}")
