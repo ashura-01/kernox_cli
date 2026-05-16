@@ -2,7 +2,7 @@
 ai_analyzer.py — Post-execution AI analysis.
 
 ONE AI call per chunk. Reflection + structured extraction in same response.
-Full output chunked at 10k chars. Anti-hallucination prompts with real examples.
+Full output chunked at 100k chars. Anti-hallucination prompts with real examples.
 NEVER suggests patching or remediation.
 
 Fixes applied:
@@ -213,21 +213,19 @@ def _chunk_output(text: str, size: int) -> list[str]:
 
 class AIAnalyzer:
 
-    _enriched_vulns: set[str] = set()
-
     def __init__(self, ai_client, state, intensity):
         self._ai = ai_client
         self._state = state
         self._intensity = intensity
         self._reflection: "ReflectionEngine | None" = None
+        self._enriched_vulns: set[str] = set()  # instance-level NVD dedup
 
     def set_reflection_engine(self, engine) -> None:
         self._reflection = engine
 
-    @classmethod
-    def reset_enrichment_cache(cls) -> None:
+    def reset_enrichment_cache(self) -> None:
         """Call this on session clear so a fresh session re-enriches everything."""
-        cls._enriched_vulns.clear()
+        self._enriched_vulns.clear()
 
     def analyze(self, tool_name: str, target: str, raw_output: str) -> list[dict]:
         """
@@ -288,7 +286,7 @@ class AIAnalyzer:
                 if data.get("summary"):
                     all_summaries.append(data["summary"])
 
-               
+
                 raw_vulns = data.get("vulnerabilities", [])
                 grounded_vulns = [
                     v for v in raw_vulns

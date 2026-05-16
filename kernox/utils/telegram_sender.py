@@ -33,8 +33,6 @@ class TelegramSender:
 
             if self._token and self._chat_id:
                 self._enabled = cfg.get("telegram_enabled") == "1"
-                if self._enabled:
-                    console.print("[green]✓ Telegram sender ready[/green]")
         except Exception:
             pass
 
@@ -82,6 +80,14 @@ class TelegramSender:
             console.print(f"[dim]⚠ Telegram file send failed: {e}[/dim]")
             return False
 
+    def notify_startup(self) -> None:
+        """Send startup status message to Telegram when Kernox launches."""
+        if self._is_enabled():
+            self.send_message(
+                "🟢Kernox Status: Running\n\n"
+                "Agent is online. Tool output will be forwarded here automatically."
+            )
+
     def notify_scan_start(self, target: str) -> None:
         """Notify that a scan is starting."""
         if self._is_enabled():
@@ -97,6 +103,20 @@ class TelegramSender:
         if self._is_enabled() and report_path:
             self.send_file(report_path, f"Kernox Report: {target}")
 
+    def auto_send_output(self, tool: str, target: str, output_path: str) -> None:
+        """Automatically send tool output file to Telegram after execution.
+
+        Called from CommandExecutor after every successful tool run.
+        Runs silently — failures are swallowed so they never interrupt the CLI.
+        """
+        if not self._is_enabled():
+            return
+        try:
+            caption = f"📤 {tool} → {target}"
+            self.send_file(output_path, caption)
+        except Exception as e:
+            console.print(f"[dim]⚠ Telegram auto-send failed: {e}[/dim]")
+
 
 # Singleton
 _telegram = None
@@ -106,3 +126,8 @@ def get_telegram() -> TelegramSender:
     if _telegram is None:
         _telegram = TelegramSender()
     return _telegram
+
+def reset_telegram() -> None:
+    """Force singleton reload — call after config changes (e.g. kernox --config)."""
+    global _telegram
+    _telegram = None

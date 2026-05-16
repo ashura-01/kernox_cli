@@ -40,6 +40,8 @@ from kernox.core.orchestrator_helpers.chat_handler import detect_builtin
 from kernox.core.orchestrator_helpers.on_demand_analyzer import OnDemandAnalyzer
 #---------telegram bot----------
 from kernox.utils.telegram_helper import send_output, send_report, send_file
+from kernox.utils.telegram_sender import get_telegram, reset_telegram
+from kernox.core.orchestrator_helpers.context_builder import build_agent_context
 
 console = Console()
 PROMPT_STYLE = Style.from_dict({"prompt": "bold cyan"})
@@ -96,6 +98,16 @@ RULES:
 
 ip_context = get_ip_context()
 
+# ── Pre-compiled result-question pattern ──────────────────────────────────────
+_RESULT_QUESTION_RE = re.compile(
+    r"what.*found|what.*output|what.*file|show.*result|tool output"
+    r"|output of the tool|extracted|hidden.*message|did you find"
+    r"|cat.*\.out|what.*in the file|what did you find|output please"
+    r"|file you found|check.*output|show output|what is the output"
+    r"|where.*file.*saved|output of the tool\?",
+    re.I,
+)
+
 
 class Orchestrator:
     def __init__(self, config: ConfigStore) -> None:
@@ -133,32 +145,8 @@ class Orchestrator:
         self._auto_analyze: bool = True
 
     def _check_result_question(self, user_input: str) -> bool:
-        """Intercept questions about command results before normal processing"""
-        result_patterns = [
-            r"what.*found",
-            r"what.*output",
-            r"what.*file",
-            r"show.*result",
-            r"tool output",
-            r"output of the tool",
-            r"extracted",
-            r"hidden.*message",
-            r"did you find",
-            r"cat.*\.out",
-            r"what.*in the file",
-            r"what did you find",
-            r"output please",
-            r"file you found",
-            r"check.*output",
-            r"show output",
-            r"what is the output",
-            r"where.*file.*saved",
-            r"output of the tool\?",
-        ]
-
-        pattern = re.compile('|'.join(result_patterns), re.I)
-        if pattern.search(user_input):
-            print(f"[DEBUG] Intercepted: {user_input}")
+        """Intercept questions about command results before normal processing."""
+        if _RESULT_QUESTION_RE.search(user_input):
             response = self._chat_handler.chat(user_input)
             console.print(Panel(Markdown(response), border_style="dim cyan", title="[dim]Response[/dim]", width=80))
             return True
@@ -166,6 +154,13 @@ class Orchestrator:
 
     def run(self) -> None:
         session = PromptSession(style=PROMPT_STYLE)
+
+        # ── Notify Telegram that Kernox is online ─────────────────────────────
+        try:
+            get_telegram().notify_startup()
+        except Exception:
+            pass
+        # ─────────────────────────────────────────────────────────────────────
 
         while True:
             try:
@@ -273,13 +268,12 @@ class Orchestrator:
     def _process(self, user_input: str) -> None:
         self._history.append({"role": "user", "content": user_input})
         if len(self._history) > 30:
-            self._history = self._history
+            self._history = self._history[-30:]
 
         intensity_name = self._intensity["name"]
         mode_number = MODE_NUMBERS.get(intensity_name, "2")
         timing = INTENSITY_TIMING.get(intensity_name, "T3,defaults")
 
-        from kernox.core.orchestrator_helpers.context_builder import build_agent_context
         raw_memory = build_agent_context(self._state)
         memory = raw_memory[:2000] if raw_memory else ""
         if ip_context and ip_context != "No active network interfaces found.":
@@ -326,6 +320,7 @@ class Orchestrator:
             return
 
         self._print_plan(steps)
+        self._cmd_executor._tg_send = "send" in user_input.lower()
         self._execute_steps(steps)
 
     def _execute_steps(self, steps: list[dict]) -> None:

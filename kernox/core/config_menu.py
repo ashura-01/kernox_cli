@@ -216,6 +216,13 @@ def _setup_telegram(cfg: ConfigStore, ks: KeyStore) -> None:
         cfg.set("telegram_chat_id", chat_id)
         cfg.set("telegram_enabled", "1")
 
+        # Reset singleton so new credentials are picked up immediately
+        try:
+            from kernox.utils.telegram_sender import reset_telegram
+            reset_telegram()
+        except Exception:
+            pass
+
         # Test connection
         try:
             import requests

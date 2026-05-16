@@ -63,6 +63,12 @@ class KeyStore:
         with self._conn:
             self._conn.execute("DELETE FROM keys")
 
+    def __del__(self) -> None:
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+
     # ── Internal ─────────────────────────────────────────────────────────────
 
     def _init_db(self) -> None:
