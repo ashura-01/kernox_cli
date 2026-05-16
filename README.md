@@ -78,7 +78,7 @@ Execute? [y/n]: y
 ### Option 1: Quick Install (Kali Linux)
 
 ```bash
-git clone https://github.com/youruser/kernox.git
+git clone https://github.com/ashura-01/kernox_cli.git
 cd kernox
 pip install -e .
 kernox
@@ -87,7 +87,7 @@ kernox
 ### Option 2: Virtual Environment (Recommended)
 
 ```bash
-git clone https://github.com/youruser/kernox.git
+git clone https://github.com/ashura-01/kernox_cli.git
 cd kernox
 python -m venv venv
 source venv/bin/activate      # On Windows: venv\Scripts\activate
