@@ -8,6 +8,8 @@ import requests
 from pathlib import Path
 from typing import Optional
 from rich.console import Console
+from kernox.config.config_store import ConfigStore
+from kernox.security.key_store import KeyStore
 
 console = Console()
 
@@ -22,8 +24,7 @@ class TelegramSender:
     def _load_config(self):
         """Load Telegram config from KeyStore and ConfigStore."""
         try:
-            from kernox.config.config_store import ConfigStore
-            from kernox.security.key_store import KeyStore
+
 
             cfg = ConfigStore()
             ks = KeyStore()
