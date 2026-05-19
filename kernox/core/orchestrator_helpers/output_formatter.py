@@ -122,8 +122,6 @@ class OutputFormatter:
         lines.append(f"[bold white]{name}[/bold white]\n")
         if vuln.get("description"):
             lines.append(f"[dim]{vuln['description']}[/dim]\n")
-        if vuln.get("impact"):
-            lines.append(f"\n[{C['warn']}]Impact:[/{C['warn']}] {vuln['impact']}")
         if vuln.get("exploit"):
             lines.append(f"\n[{C['ok']}]Exploit:[/{C['ok']}]")
             lines.append(f"\n[dim cyan]{vuln['exploit']}[/dim cyan]")
@@ -297,4 +295,3 @@ def _table(title: str, columns: list[str], border: str = "dim cyan") -> Table:
     for col in columns:
         t.add_column(col, style="white", no_wrap=False)
     return t
-
