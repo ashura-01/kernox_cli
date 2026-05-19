@@ -41,7 +41,7 @@ from kernox.guards.shell_sanitizer import sanitize, SUDO_TOOLS
 console = Console()
 TMP_OUTPUT_DIR = Path("/tmp/kernox")
 
-IDLE_TIMEOUT = 30
+IDLE_TIMEOUT = 120
 HARD_DEADLINE = 7200
 PSUTIL_CHECK_INTERVAL = 2.0
 
