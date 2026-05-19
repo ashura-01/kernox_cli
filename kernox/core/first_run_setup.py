@@ -110,10 +110,6 @@ def run_first_time_setup() -> None:
     if nvd_key:
         safe_store("nvd_api_key", nvd_key)
 
-    vt_key = secure_prompt("VirusTotal API key (optional, Enter to skip)")
-    if vt_key:
-        safe_store("virustotal_api_key", vt_key)
-
     # ── Telegram setup ────────────────────────────────────────────────────
     console.print("\n[bold]Optional:[/bold] Telegram Notifications\n")
 
