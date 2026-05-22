@@ -146,20 +146,8 @@ DANGEROUS_PATH_RE = re.compile(
 # ── Shell operators ───────────────────────────────────────────────────────────
 # Applied to command with quoted sections stripped so msfconsole -x "cmd;cmd" works
 SHELL_OPERATOR_RE = re.compile(
-    r"""
-    (?:
-        &&          |
-        \|\|        |
-        \|(?!\w)    |
-        `[^`]*`     |
-        \$\(        |
-        \$\{        |
-        \beval\b    |
-        # 2>&1     <-- REMOVE THIS LINE
-        # >>?      <-- REMOVE THIS LINE
-    )
-    """,
-    re.VERBOSE,
+    r"(?:&&|\|\||\|(?!\w)|`[^`]*`|\$\(|\$\{|\beval\b)",
+    re.VERBOSE
 )
 
 MAX_COMMAND_LENGTH = 4096   # msfvenom with large payloads
