@@ -35,10 +35,67 @@ BLOCKED_BINARIES: set[str] = {
 # ── PTY-required tools — need full interactive terminal ───────────────────────
 # Tools that use curses, raw input, or expect a terminal
 PTY_TOOLS: set[str] = {
-    "msfconsole", "setoolkit", "social-engineer-toolkit",
-    "beef-xss", "beef", "armitage", "wifite",
-    "sqlmap",    # interactive mode
-    "metasploit",
+    # ── Metasploit / C2 ──────────────────────────────────────────────────────
+    "msfconsole", "metasploit", "armitage", "cobalt-strike",
+
+    # ── Social Engineering ────────────────────────────────────────────────────
+    "setoolkit", "social-engineer-toolkit", "beef-xss", "beef",
+
+    # ── Wireless ─────────────────────────────────────────────────────────────
+    "wifite", "airbase-ng", "hostapd-wpe",
+
+    # ── Web / SQLi ────────────────────────────────────────────────────────────
+    "sqlmap",                          # --os-shell / --sql-shell drops to PTY
+    "burpsuite", "zaproxy",
+
+    # ── File Transfer / Remote ────────────────────────────────────────────────
+    "ftp", "sftp", "tftp", "ncftp",
+    "ssh", "telnet", "rlogin", "rsh",
+    "smbclient", "rpcclient", "wmiexec.py",
+
+    # ── Password Cracking (interactive prompts) ───────────────────────────────
+    "john", "hashcat",                 # --status / keypress listeners
+    "hydra",                           # progress + interactive kill
+
+    # ── Impacket suite ───────────────────────────────────────────────────────
+    "psexec.py", "smbexec.py", "atexec.py", "dcomexec.py",
+    "lookupsid.py", "secretsdump.py", "getTGT.py", "getST.py",
+
+    # ── Post-exploitation shells ──────────────────────────────────────────────
+    "evil-winrm", "pwncat", "pwncat-cs", "rlwrap",
+    "netcat", "nc", "ncat", "socat",
+
+    # ── Database CLIs ─────────────────────────────────────────────────────────
+    "mysql", "psql", "sqlite3", "mssql-cli", "redis-cli",
+    "mongo", "mongosh", "cqlsh",
+
+    # ── Shells / REPLs ────────────────────────────────────────────────────────
+    "bash", "sh", "zsh", "fish", "dash", "ksh",
+    "python", "python3", "python2",
+    "ruby", "irb",
+    "node", "nodejs",
+    "php", "perl",
+    "gdb", "pdb", "lldb", "radare2", "r2",
+    "pwndbg",
+
+    # ── Enumeration (interactive/paginated output) ────────────────────────────
+    "enum4linux", "enum4linux-ng",
+    "crackmapexec", "cme",
+    "bloodhound-python",
+
+    # ── Fuzzing / Scanning with interactive kill ──────────────────────────────
+    "ffuf", "gobuster", "wfuzz", "dirb",   # Ctrl-C mid-run needs PTY
+    "nikto",
+
+    # ── Exploit frameworks ────────────────────────────────────────────────────
+    "routersploit",                     # rsf console
+    "empire",                           # PowerShell Empire
+    "starkiller",
+
+    # ── Misc interactive tools ────────────────────────────────────────────────
+    "proxychains", "proxychains4",      # wraps an interactive child
+    "tmux", "screen",                   # mux sessions
+    "vim", "nano", "less", "more",      # editors/pagers in pipeline
 }
 
 # ── Tools that always need sudo ───────────────────────────────────────────────
