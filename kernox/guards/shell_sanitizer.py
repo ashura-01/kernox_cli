@@ -151,12 +151,12 @@ SHELL_OPERATOR_RE = re.compile(
         &&          |
         \|\|        |
         \|(?!\w)    |
-        >>?         |
         `[^`]*`     |
         \$\(        |
         \$\{        |
         \beval\b    |
-        2>&1
+        # 2>&1     <-- REMOVE THIS LINE
+        # >>?      <-- REMOVE THIS LINE
     )
     """,
     re.VERBOSE,
