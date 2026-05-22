@@ -10,7 +10,15 @@ Flow:
   6. Log to attack timeline
   7. AI analyzes output (only when auto-analyze is ON) → extracts vulns + structured state
      (state_parser is called FROM ai_analyzer — no separate AI call)
-  8. Chain next steps with user confirmation (up to 3 levels)
+  8. Chain next steps with user confirmation (up to max_chain_depth levels)
+
+Design contract
+───────────────
+• _offer_chain is the SINGLE source of truth for interactive step selection.
+  OnDemandAnalyzer delegates to it — never duplicates the logic.
+• _offer_chain(next_steps, intensity, depth) is called exactly once per
+  analyze() return; never inside the chunk loop.
+• format_analysis_summary is owned by ai_analyzer/OutputFormatter — not here.
 """
 
 from __future__ import annotations
@@ -23,7 +31,7 @@ from typing import Optional
 
 from rich.console import Console
 from rich.markdown import Markdown
-from rich.prompt import Confirm, Prompt
+from rich.prompt import Confirm
 from rich.panel import Panel
 from rich import box
 
@@ -40,40 +48,33 @@ class CommandExecutor:
         self._cfg          = config
         self._state        = state
         self._executor     = Executor(config)
-        self._ai_analyzer  = ai_analyzer   # injected by Orchestrator
-        self._reflection   = None          # injected by Orchestrator
-        self._chat_handler = None          # injected by Orchestrator for recording
-        self._auto_analyze: bool = True    # toggled with `analyze on/off`
-        self._tg_send:      bool = False   # set per-request by Orchestrator
+        self._ai_analyzer  = ai_analyzer
+        self._reflection   = None
+        self._chat_handler = None
+        self._auto_analyze: bool = True
+        self._tg_send:      bool = False
 
-        # Configurable chain depth — how many AI-suggested hops are allowed
-        # before chaining stops.  Override via config["max_chain_depth"].
         self.max_chain_depth: int = int(config.get("max_chain_depth") or 3)
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
     def _merge_tool_into_command(self, step: dict) -> dict:
         """
-        AI next-step entries have two relevant fields:
-            step["tool"]            — the binary name  (e.g. "wpscan", "nmap")
-            step["args"]["command"] — flags only       (e.g. "--url https://example.com")
+        Enforce that args.command starts with the binary named in step["tool"].
 
-        run_shell_step sanitizes and executes args["command"] verbatim, so if the
-        binary is missing from that string the shell receives bare flags and fails.
-
-        Returns a copy of args with the binary prepended when needed.
+        The AI prompt instructs this, but this method is the hard safety net.
+        Returns a deep copy of args with the binary prepended only when missing.
         """
         args = copy.deepcopy(step.get("args", {}))
         tool = step.get("tool", "").strip().lower()
         cmd  = args.get("command", "").strip()
 
-        # "shell" / "bash" are meta-values — command is already complete
         if not tool or tool in ("shell", "bash"):
             return args
 
-        # Command already starts with the binary — nothing to do
-        cmd_binary = cmd.split()[0].lower() if cmd.split() else ""
-        if cmd_binary == tool:
+        cmd_parts  = cmd.split()
+        cmd_binary = cmd_parts[0].lower() if cmd_parts else ""
+        if cmd_binary == tool or cmd_binary.endswith(f"/{tool}"):
             return args
 
         args["command"] = f"{tool} {cmd}".strip() if cmd else tool
@@ -93,12 +94,12 @@ class CommandExecutor:
         target  = args.get("target", "")
 
         if not raw_cmd:
-            console.print("[red]✗ No command to execute[/red]")
+            console.print("[red]No command to execute[/red]")
             return None
 
         san = sanitize(raw_cmd, self._cfg)
         if not san.allowed:
-            console.print(f"[red]✗ Blocked: {san.reason}[/red]")
+            console.print(f"[red]Blocked: {san.reason}[/red]")
             return None
 
         if not target and san.target:
@@ -107,7 +108,12 @@ class CommandExecutor:
         console.print()
         if reason:
             console.print(f"[dim cyan]{reason}[/dim cyan]")
-        console.print(Panel(Markdown(f"```bash\n{san.command}\n```"), width=80, border_style="dim", box=box.MINIMAL))
+        console.print(Panel(
+            Markdown(f"```bash\n{san.command}\n```"),
+            width=80,
+            border_style="dim",
+            box=box.MINIMAL,
+        ))
 
         if not Confirm.ask("  Execute?", default=True):
             console.print("[dim]Skipped.[/dim]")
@@ -150,18 +156,18 @@ class CommandExecutor:
         except Exception:
             pass
 
-        # ── Record output for chat handler ────────────────────────────────────
+        # Record output path for chat handler
         if self._chat_handler:
             if result.output_path:
                 self._chat_handler.record_command(san.command, str(result.output_path))
             else:
-                out_files = glob.glob(os.path.join("/tmp/kernox", "*.out"))
+                out_files = glob.glob(os.path.join("/tmp/kernox", "*.txt"))
                 if out_files:
                     self._chat_handler.record_command(
                         san.command, max(out_files, key=os.path.getctime)
                     )
 
-        # ── Auto-send to Telegram (non-blocking, only when user said "send") ──
+        # Auto-send to Telegram (non-blocking)
         if self._tg_send and result.output_path and result.stdout.strip():
             _op, _tool, _tgt = str(result.output_path), result.tool_name, target or "unknown"
             def _do_send():
@@ -172,7 +178,7 @@ class CommandExecutor:
                     pass
             threading.Thread(target=_do_send, daemon=True).start()
 
-        # ── PTY tools: analyze captured session output after they exit ────────
+        # PTY tools: analyze captured session output after they exit
         if san.needs_pty and result.stdout.strip() and self._ai_analyzer:
             if self._auto_analyze:
                 console.print("\n[dim cyan]Analyzing session output...[/dim cyan]")
@@ -181,10 +187,10 @@ class CommandExecutor:
                     target     = target or "unknown",
                     raw_output = result.stdout,
                 )
-                self._offer_chain(next_steps, intensity, _chain_depth)
+                self._offer_chain(next_steps, intensity, depth=_chain_depth)
             return result.stdout
 
-        # ── AI analysis — extracts vulns + structured state in ONE call ───────
+        # AI analysis — extracts vulns + structured state in ONE call per chunk
         if (self._ai_analyzer
                 and self._auto_analyze
                 and result.stdout.strip()
@@ -195,7 +201,8 @@ class CommandExecutor:
                 target     = target or "unknown",
                 raw_output = result.stdout,
             )
-            self._offer_chain(next_steps, intensity, _chain_depth)
+            # _offer_chain called ONCE after analyze() completes
+            self._offer_chain(next_steps, intensity, depth=_chain_depth)
         elif not self._auto_analyze and result.stdout.strip():
             console.print(
                 "[dim]Auto-analysis off — run [cyan]analyze last[/cyan] "
@@ -204,17 +211,57 @@ class CommandExecutor:
 
         return result.stdout if (not result.blocked and result.return_code >= 0) else None
 
-    def _offer_chain(self, next_steps: list, intensity: dict, depth: int) -> None:
-        """Offer AI-suggested next steps — user picks by number."""
+    def _offer_chain(
+        self,
+        next_steps: list,
+        intensity:  dict | None,
+        depth:      int = 0,
+    ) -> None:
+        """
+        Offer AI-suggested next steps to the user — user picks by number.
+
+        This method is the SINGLE source of truth for interactive step selection.
+        It is called:
+          • by run_shell_step() after every auto-analysis, and
+          • by OnDemandAnalyzer._offer_chain() after on-demand analysis.
+
+        It is NEVER called from inside ai_analyzer.py.
+
+        Uses plain input() instead of Rich Prompt.ask(choices=) to avoid
+        Rich's strict re-prompt loop swallowing input on some terminal configs.
+
+        Parameters
+        ----------
+        next_steps : list
+            Validated step dicts returned by ai_analyzer.analyze().
+        intensity : dict | None
+            Current intensity settings; None → default 300 s timeout.
+        depth : int
+            Current chain depth; incremented for each recursive step.
+        """
         if not next_steps:
             return
+        if depth >= self.max_chain_depth:
+            console.print(
+                f"[dim]Max chain depth ({self.max_chain_depth}) reached — "
+                "stopping automatic chaining.[/dim]"
+            )
+            return
 
-        console.print()
-        choice = Prompt.ask(
-            "  Run which?",
-            choices=[str(i) for i in range(1, len(next_steps) + 1)] + ["all", "none"],
-            default="none"
-        )
+        valid_choices = [str(i) for i in range(1, len(next_steps) + 1)] + ["all", "none"]
+        hint          = "/".join(valid_choices)
+
+        while True:
+            try:
+                raw = input(f"  Run which? [{hint}] (none): ").strip().lower() or "none"
+            except (EOFError, KeyboardInterrupt):
+                console.print()
+                return
+
+            if raw in valid_choices:
+                choice = raw
+                break
+            console.print(f"  [dim]Enter one of: {hint}[/dim]")
 
         if choice == "none":
             return
@@ -223,7 +270,7 @@ class CommandExecutor:
 
         for step in selected:
             merged_args = self._merge_tool_into_command(step)
-            reason = step.get("reason", "")
+            reason      = step.get("reason", "")
             if merged_args.get("command"):
                 self.run_shell_step(
                     merged_args,

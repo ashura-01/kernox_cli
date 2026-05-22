@@ -36,7 +36,7 @@ from rich.prompt import Confirm
 from rich.spinner import Spinner
 
 from kernox.config.config_store import ConfigStore
-from kernox.guards.shell_sanitizer import sanitize, SUDO_TOOLS
+from kernox.guards.shell_sanitizer import sanitize
 
 console = Console()
 TMP_OUTPUT_DIR = Path("/tmp/kernox")
@@ -79,12 +79,17 @@ def _ensure_tmp() -> None:
         raise
 
 
-def _save_output(binary: str, target: str, output: str) -> Optional[Path]:
+def _save_output(binary: str, target: str, output: str, tool_name: str = "") -> Optional[Path]:
     try:
         _ensure_tmp()
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_target = re.sub(r"[^a-zA-Z0-9._-]", "_", target)[:40]
-        filename = f"{binary}_{safe_target}_{ts}.txt"
+        # Use tool_name (the logical name passed by the caller) for the filename
+        # so on_demand_analyzer can match it against state's tool_name field.
+        # Fall back to binary only when tool_name is absent or generic.
+        file_prefix = (tool_name.strip() or binary).lower()
+        file_prefix = re.sub(r"[^a-zA-Z0-9._-]", "_", file_prefix)[:30]
+        filename = f"{file_prefix}_{safe_target}_{ts}.txt"
         path = TMP_OUTPUT_DIR / filename
         try:
             path.write_text(output, encoding="utf-8", errors="replace")
@@ -843,7 +848,7 @@ class Executor:
 
         output_path = None
         if full_output:
-            output_path = _save_output(binary, target or "unknown", full_output)
+            output_path = _save_output(binary, target or "unknown", full_output, tool_name=tool_name)
             if output_path:
                 console.print(f"[dim]saved → {output_path}[/dim]")
 

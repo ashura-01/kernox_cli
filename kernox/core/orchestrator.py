@@ -140,6 +140,7 @@ class Orchestrator:
             state=self._state,
             ai_analyzer=self._ai_analyzer,
         )
+        self._on_demand_analyzer.set_command_executor(self._cmd_executor)  # ← add this
         # Auto-analyze flag — True by default, toggled with `analyze on/off`
         # Propagated to _cmd_executor so it skips the post-execution AI call.
         self._auto_analyze: bool = True

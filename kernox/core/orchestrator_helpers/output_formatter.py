@@ -7,7 +7,8 @@ Phase 1 (immediate): Show ALL raw output — every line, no truncation.
 
 Phase 2 (after AI):  Show AI-refined vulnerability panels + next steps.
                      format_vulnerability() and format_analysis_summary() are called
-                     by ai_analyzer after it processes the output.
+                     by ai_analyzer ONCE after all chunks are processed — never inside
+                     the chunk loop, never by CommandExecutor or OnDemandAnalyzer.
 
 Design: output_formatter NEVER truncates. It shows everything.
 """
@@ -99,6 +100,13 @@ class OutputFormatter:
 
     @staticmethod
     def format_analysis_summary(summary: str, next_steps: list[dict]) -> None:
+        """
+        Print the analysis summary line and the suggested next-steps list.
+
+        CONTRACT: called by ai_analyzer exactly ONCE after all chunks are
+        processed. Must NOT be called by CommandExecutor or OnDemandAnalyzer —
+        those callers only invoke _offer_chain for the interactive prompt.
+        """
         if summary:
             console.print(f"\n[bold cyan]⚡ Analysis:[/bold cyan] {summary}")
         if next_steps:
