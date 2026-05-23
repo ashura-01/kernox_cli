@@ -37,7 +37,7 @@ _RATE_LOCK      = threading.Lock()
 _last_call_time: float = 0.0
 
 
-INTER_CALL_DELAY: float = 2.0
+INTER_CALL_DELAY: float = 5.0
 
 
 class BaseAIClient(ABC):

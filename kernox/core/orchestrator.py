@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Optional
 
 from prompt_toolkit import PromptSession
@@ -36,9 +37,7 @@ from kernox.core.orchestrator_helpers import (
     FeatureHandler,
 )
 from kernox.core.orchestrator_helpers.chat_handler import detect_builtin
-# ── NEW: on-demand analyzer ──────────────────────────────────────────────────
 from kernox.core.orchestrator_helpers.on_demand_analyzer import OnDemandAnalyzer
-#---------telegram bot----------
 from kernox.utils.telegram_helper import send_output, send_report, send_file
 from kernox.utils.telegram_sender import get_telegram, reset_telegram
 from kernox.core.orchestrator_helpers.context_builder import build_agent_context
@@ -46,7 +45,6 @@ from kernox.core.orchestrator_helpers.context_builder import build_agent_context
 console = Console()
 PROMPT_STYLE = Style.from_dict({"prompt": "bold cyan"})
 
-# ── Intensity levels ──────────────────────────────────────────────────────────
 INTENSITY_LEVELS = {
     "1": {"name": "STEALTH",    "timeout": 600},
     "2": {"name": "NORMAL",     "timeout": 300},
@@ -98,7 +96,6 @@ RULES:
 
 ip_context = get_ip_context()
 
-# ── Pre-compiled result-question pattern ──────────────────────────────────────
 _RESULT_QUESTION_RE = re.compile(
     r"what.*found|what.*output|what.*file|show.*result|tool output"
     r"|output of the tool|extracted|hidden.*message|did you find"
@@ -107,6 +104,40 @@ _RESULT_QUESTION_RE = re.compile(
     r"|where.*file.*saved|output of the tool\?",
     re.I,
 )
+
+# ── Shared backoff helper (mirrors ai_analyzer._chat_with_backoff) ────────────
+_BACKOFF_BASE: float = 2.0
+_BACKOFF_MAX:  float = 60.0
+_MAX_RETRIES:  int   = 5
+
+
+def _chat_with_backoff(ai_client, messages, system, max_tokens) -> str:
+    """
+    Wrap ai_client.chat() with exponential backoff on 429/503.
+    BaseAIClient already spaces calls globally; this handles bursts.
+    """
+    delay = _BACKOFF_BASE
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            return ai_client.chat(
+                messages=messages,
+                system=system,
+                max_tokens=max_tokens,
+            )
+        except Exception as exc:
+            msg     = str(exc).lower()
+            is_rate = "429" in msg or "rate limit" in msg or "rate_limit" in msg
+            is_srv  = "503" in msg or "server error" in msg or "overloaded" in msg
+            if (is_rate or is_srv) and attempt < _MAX_RETRIES:
+                wait = min(delay, _BACKOFF_MAX)
+                console.print(
+                    f"[dim yellow]Rate limited (attempt {attempt}/{_MAX_RETRIES}). "
+                    f"Retrying in {wait:.1f}s...[/dim yellow]"
+                )
+                time.sleep(wait)
+                delay *= 2
+            else:
+                raise
 
 
 class Orchestrator:
@@ -129,24 +160,20 @@ class Orchestrator:
         self._reflection = ReflectionEngine(self._ai, self._state, self._intensity)
         self._ai_analyzer.set_reflection_engine(self._reflection)
         self._cmd_executor._reflection = self._reflection
-        self._state_manager  = StateManager(self._state, self._intensity)
+        self._state_manager   = StateManager(self._state, self._intensity)
         self._session_manager = SessionManager(self._state, self._updater)
         self._report_handler  = ReportHandler(self._state)
         self._feature_handler = FeatureHandler(self._state, self._cmd_executor._executor)
-        self._cmd_executor._chat_handler = self._chat_handler  # Link for recording
+        self._cmd_executor._chat_handler = self._chat_handler
 
-        # ── On-demand analysis (shares the same AIAnalyzer — identical output) ──
         self._on_demand_analyzer = OnDemandAnalyzer(
             state=self._state,
             ai_analyzer=self._ai_analyzer,
         )
-        self._on_demand_analyzer.set_command_executor(self._cmd_executor)  # ← add this
-        # Auto-analyze flag — True by default, toggled with `analyze on/off`
-        # Propagated to _cmd_executor so it skips the post-execution AI call.
+        self._on_demand_analyzer.set_command_executor(self._cmd_executor)
         self._auto_analyze: bool = True
 
     def _check_result_question(self, user_input: str) -> bool:
-        """Intercept questions about command results before normal processing."""
         if _RESULT_QUESTION_RE.search(user_input):
             response = self._chat_handler.chat(user_input)
             console.print(Panel(Markdown(response), border_style="dim cyan", title="[dim]Response[/dim]", width=80))
@@ -155,20 +182,14 @@ class Orchestrator:
 
     def run(self) -> None:
         session = PromptSession(style=PROMPT_STYLE)
-
-        # ── Notify Telegram that Kernox is online ─────────────────────────────
         try:
             get_telegram().notify_startup()
         except Exception:
             pass
-        # ─────────────────────────────────────────────────────────────────────
 
         while True:
             try:
-                mode = self._intensity["name"]
-                mode_num = MODE_NUMBERS.get(mode, "2")
-                label = f":{mode_num}.{mode.lower()}" if mode != "NORMAL" else ":2.normal"
-                raw = session.prompt(f"\nkernox⮞⮞ ")
+                raw = session.prompt(f"\nkernox⯮⯮ ")
             except (EOFError, KeyboardInterrupt):
                 break
 
@@ -213,7 +234,6 @@ class Orchestrator:
                 label_s = "[#55efc4]ON[/#55efc4]" if val == "1" else "[dim]OFF[/dim]"
                 console.print(f"[cyan]✓ Raw output {label_s}[/cyan]")
                 continue
-            # ── analyze commands ──────────────────────────────────────────────
             elif cmd.startswith("analyze"):
                 rest = user_input[len("analyze"):].strip()
                 if rest.lower() == "on":
@@ -222,24 +242,16 @@ class Orchestrator:
                     self._toggle_auto_analyze(False); continue
                 else:
                     self._on_demand_analyzer.run(rest); continue
-
             elif cmd.startswith("send"):
                 rest = user_input[4:].strip().lower()
-
                 if rest in ("output", "out"):
                     send_output()
-
                 elif rest in ("report", "rep"):
                     send_report()
-
                 elif rest:
                     send_file(rest)
-
                 else:
-                    console.print(
-                        "[dim]Usage: send output | send report | send <filepath>[/dim]"
-                    )
-
+                    console.print("[dim]Usage: send output | send report | send <filepath>[/dim]")
                 continue
 
             builtin = detect_builtin(user_input)
@@ -262,7 +274,6 @@ class Orchestrator:
             elif builtin == "mode":
                 self._show_mode_picker(); continue
 
-
             self._auto_detect_intensity(user_input)
             self._process(user_input)
 
@@ -272,8 +283,8 @@ class Orchestrator:
             self._history = self._history[-30:]
 
         intensity_name = self._intensity["name"]
-        mode_number = MODE_NUMBERS.get(intensity_name, "2")
-        timing = INTENSITY_TIMING.get(intensity_name, "T3,defaults")
+        mode_number    = MODE_NUMBERS.get(intensity_name, "2")
+        timing         = INTENSITY_TIMING.get(intensity_name, "T3,defaults")
 
         raw_memory = build_agent_context(self._state)
         memory = raw_memory[:2000] if raw_memory else ""
@@ -288,9 +299,9 @@ class Orchestrator:
         )
 
         try:
-            with Live(Spinner("dots", text="[cyan]Thinking...[/cyan]"),
-                      refresh_per_second=10):
-                ai_resp = self._ai.chat(
+            with Live(Spinner("dots", text="[cyan]Thinking...[/cyan]"), refresh_per_second=10):
+                ai_resp = _chat_with_backoff(
+                    self._ai,
                     messages=self._history[-10:],
                     system=system_prompt,
                     max_tokens=800,
@@ -326,8 +337,8 @@ class Orchestrator:
 
     def _execute_steps(self, steps: list[dict]) -> None:
         for step in steps:
-            tool = step.get("tool", "").lower()
-            args = step.get("args", {})
+            tool   = step.get("tool", "").lower()
+            args   = step.get("args", {})
             reason = step.get("reason", "")
 
             if tool == "mail_crawler":
@@ -336,9 +347,8 @@ class Orchestrator:
 
             if not args.get("command") and tool not in ("shell", "mail_crawler", ""):
                 target = args.get("target", "")
-                flags = args.get("flags", args.get("args", ""))
-                args = {"command": f"{tool} {flags} {target}".strip(),
-                        "target": target}
+                flags  = args.get("flags", args.get("args", ""))
+                args   = {"command": f"{tool} {flags} {target}".strip(), "target": target}
 
             if args.get("command"):
                 self._cmd_executor.run_shell_step(args, reason, self._intensity)
@@ -367,10 +377,10 @@ class Orchestrator:
         t = Table(title="Execution Plan", box=box.MINIMAL,
                   border_style="dim cyan", header_style="none", padding=(0, 1))
         t.add_column("#",       style="bold cyan", width=3)
-        t.add_column("Command", style="white", no_wrap=False)
-        t.add_column("Reason",  style="dim",  no_wrap=False)
+        t.add_column("Command", style="white",     no_wrap=False)
+        t.add_column("Reason",  style="dim",       no_wrap=False)
         for i, s in enumerate(steps, 1):
-            cmd = s.get("args", {}).get("command", "")
+            cmd    = s.get("args", {}).get("command", "")
             reason = s.get("reason", "")
             t.add_row(str(i), cmd, reason)
         console.print(t)
@@ -379,9 +389,9 @@ class Orchestrator:
         console.print()
         t = Table(title="Intensity Mode", box=box.MINIMAL,
                   border_style="bold cyan", padding=(0, 2))
-        t.add_column("#",    style="cyan",  width=3)
-        t.add_column("Mode", style="white", width=12)
-        t.add_column("Timeout", style="dim", width=10)
+        t.add_column("#",           style="cyan",  width=3)
+        t.add_column("Mode",        style="white", width=12)
+        t.add_column("Timeout",     style="dim",   width=10)
         t.add_column("Description", style="dim")
         descs = {
             "STEALTH":    "Slow, quiet — avoid IDS detection",
@@ -391,23 +401,16 @@ class Orchestrator:
         }
         for k, v in INTENSITY_LEVELS.items():
             marker = "▸ " if self._intensity["name"] == v["name"] else "  "
-            t.add_row(
-                f"{marker}{k}",
-                v["name"],
-                f"{v['timeout']}s",
-                descs.get(v["name"], ""),
-            )
+            t.add_row(f"{marker}{k}", v["name"], f"{v['timeout']}s", descs.get(v["name"], ""))
         console.print(t)
         choice = Prompt.ask("Choose", choices=["1", "2", "3", "4"], default="2")
         self._intensity = INTENSITY_LEVELS[choice]
         self._ai_analyzer._intensity = self._intensity
-        self._reflection._intensity = self._intensity
+        self._reflection._intensity  = self._intensity
         console.print(f"[green]✓ Mode → {self._intensity['name']}[/green]")
 
     def _toggle_auto_analyze(self, enable: bool) -> None:
-        """Enable or disable automatic post-execution AI analysis."""
         self._auto_analyze = enable
-        # Propagate to command executor so it guards the AIAnalyzer call
         self._cmd_executor._auto_analyze = enable
         state = "[#55efc4]ON[/#55efc4]" if enable else "[dim]OFF[/dim]"
         console.print(f"[cyan]✓ Auto-analysis {state}[/cyan]")
@@ -418,9 +421,9 @@ class Orchestrator:
             if kw in lower:
                 new = INTENSITY_LEVELS[lvl]
                 if new["name"] != self._intensity["name"]:
-                    self._intensity = new
+                    self._intensity          = new
                     self._ai_analyzer._intensity = new
-                    self._reflection._intensity = new
+                    self._reflection._intensity  = new
                     console.print(f"[cyan]⚡ Intensity → {new['name']}[/cyan]")
                 break
 
@@ -432,24 +435,23 @@ class Orchestrator:
                 "Run a scan first, or: auto 192.168.0.1[/dim]"
             )
             return
-
         if results:
-            last = results[-1]
-            seed_output = last.raw_output or last.tool
-            seed_tool = last.tool
-            seed_target = last.target
+            last         = results[-1]
+            seed_output  = last.raw_output or last.tool
+            seed_tool    = last.tool
+            seed_target  = last.target
         else:
-            seed_output = f"Starting reconnaissance on {target_hint}"
-            seed_tool = "init"
-            seed_target = target_hint
+            seed_output  = f"Starting reconnaissance on {target_hint}"
+            seed_tool    = "init"
+            seed_target  = target_hint
 
         self._reflection.autonomous_chain(
             initial_output = seed_output,
-            tool_name = seed_tool,
-            target = seed_target,
-            intensity = self._intensity,
-            executor = self._cmd_executor._executor,
-            max_steps = 5,
+            tool_name      = seed_tool,
+            target         = seed_target,
+            intensity      = self._intensity,
+            executor       = self._cmd_executor._executor,
+            max_steps      = 5,
         )
 
     def run_headless(self, target: str, mode: str = "web recon") -> None:
@@ -459,37 +461,36 @@ class Orchestrator:
     def _print_help(self) -> None:
         t = Table(box=box.SIMPLE, show_header=False,
                   border_style="dim cyan", padding=(0, 2))
-        t.add_column(style="bold cyan",  width=28, no_wrap=True)
-        t.add_column(style="dim white",  no_wrap=False)
-
+        t.add_column(style="bold cyan", width=28, no_wrap=True)
+        t.add_column(style="dim white", no_wrap=False)
         rows = [
-            ("help",                            "show this menu"),
-            ("exit / quit",                     "exit kernox"),
-            ("clear",                           "reset session state and history"),
-            ("mode",                            "pick intensity: STEALTH / NORMAL / AGGRESSIVE / FULL"),
-            ("raw on / raw off",                "toggle live streaming of tool output"),
-            ("auto [target]",                   "autonomous agent chain — AI plans & runs up to 5 steps"),
-            ("state",                           "show hosts, findings, web paths, tools run"),
-            ("score",                           "CVSS risk summary for all session findings"),
-            ("cve <query>",                     "search NIST NVD — keyword or exact CVE-ID"),
-            ("payload",                         "interactive msfvenom payload builder"),
-            ("log",                             "attack timeline  |  log clear — wipe it"),
-            ("report",                          "export findings to PDF"),
-            ("save",                            "save session to disk"),
-            ("load",                            "restore a saved session"),
-            ("sessions",                        "list all saved sessions"),
-            ("analyze",                         "analyze entire session (all saved outputs)"),
-            ("analyze last",                    "analyze most recent tool output"),
-            ("analyze <toolname>",              "analyze all outputs from a specific tool"),
-            ("analyze <ip>",                    "analyze all findings for a host IP"),
-            ("analyze on / analyze off",        "toggle auto-analysis after each tool run"),
-            ("send output",                     "send tool output files to Telegram"),
-            ("send report",                     "send PDF report to Telegram"),
-            ("send <filepath>",                 "send any file to Telegram"),
+            ("help",                       "show this menu"),
+            ("exit / quit",                "exit kernox"),
+            ("clear",                      "reset session state and history"),
+            ("mode",                       "pick intensity: STEALTH / NORMAL / AGGRESSIVE / FULL"),
+            ("raw on / raw off",           "toggle live streaming of tool output"),
+            ("auto [target]",              "autonomous agent chain — AI plans & runs up to 5 steps"),
+            ("state",                      "show hosts, findings, web paths, tools run"),
+            ("score",                      "CVSS risk summary for all session findings"),
+            ("cve <query>",                "search NIST NVD — keyword or exact CVE-ID"),
+            ("payload",                    "interactive msfvenom payload builder"),
+            ("log",                        "attack timeline  |  log clear — wipe it"),
+            ("report",                     "export findings to PDF"),
+            ("save",                       "save session to disk"),
+            ("load",                       "restore a saved session"),
+            ("sessions",                   "list all saved sessions"),
+            ("analyze",                    "analyze entire session (all saved outputs)"),
+            ("analyze last",               "analyze most recent tool output"),
+            ("analyze select",             "pick output file(s) from a numbered table"),
+            ("analyze <toolname>",         "analyze all outputs from a specific tool"),
+            ("analyze <ip>",               "analyze all findings for a host IP"),
+            ("analyze on / analyze off",   "toggle auto-analysis after each tool run"),
+            ("send output",                "send tool output files to Telegram"),
+            ("send report",                "send PDF report to Telegram"),
+            ("send <filepath>",            "send any file to Telegram"),
         ]
-        for cmd, desc in rows:
-            t.add_row(cmd, desc)
-
+        for c, d in rows:
+            t.add_row(c, d)
         console.print(Panel(
             t,
             title="[bold cyan] Kernox Commands [/bold cyan]",
@@ -498,10 +499,10 @@ class Orchestrator:
             padding=(0, 1),
         ))
         console.print(
-            "  [dim]Any natural language works: "
-            "[cyan]\"scan 192.168.0.1\"[/cyan]  "
-            "[cyan]\"enumerate web server at target.com\"[/cyan]  "
-            "[cyan]\"exploit vsftpd on 192.168.0.5\"[/cyan][/dim]\n"
+            '  [dim]Any natural language works: '
+            '[cyan]"scan 192.168.0.1"[/cyan]  '
+            '[cyan]"enumerate web server at target.com"[/cyan]  '
+            '[cyan]"exploit vsftpd on 192.168.0.5"[/cyan][/dim]\n'
         )
 
 

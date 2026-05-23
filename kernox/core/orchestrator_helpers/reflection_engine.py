@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from kernox.utils.network_ips import get_ip_context
 from rich.console import Console
 from rich.live import Live
@@ -40,6 +41,37 @@ from rich.prompt import Confirm
 from rich import box
 
 console = Console()
+
+_BACKOFF_BASE: float = 2.0
+_BACKOFF_MAX:  float = 60.0
+_MAX_RETRIES:  int   = 5
+
+
+def _chat_with_backoff(ai_client, messages: list, system: str, max_tokens: int) -> str:
+    """Exponential backoff on 429/503. BaseAIClient spaces calls; this handles bursts."""
+    delay = _BACKOFF_BASE
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            return ai_client.chat(
+                messages=messages,
+                system=system,
+                max_tokens=max_tokens,
+            )
+        except Exception as exc:
+            msg     = str(exc).lower()
+            is_rate = "429" in msg or "rate limit" in msg or "rate_limit" in msg
+            is_srv  = "503" in msg or "server error" in msg or "overloaded" in msg
+            if (is_rate or is_srv) and attempt < _MAX_RETRIES:
+                wait = min(delay, _BACKOFF_MAX)
+                console.print(
+                    f"[dim yellow]Rate limited (attempt {attempt}/{_MAX_RETRIES}). "
+                    f"Retrying in {wait:.1f}s...[/dim yellow]"
+                )
+                time.sleep(wait)
+                delay *= 2
+            else:
+                raise
+
 
 # ── Phase definitions ─────────────────────────────────────────────────────────
 
@@ -307,7 +339,8 @@ class ReflectionEngine:
                 Spinner("dots", text="[cyan]Reflecting...[/cyan]"),
                 refresh_per_second=10,
             ):
-                response = self._ai.chat(
+                response = _chat_with_backoff(
+                    self._ai,
                     messages=[{"role": "user", "content": prompt}],
                     system=_REFLECTION_SYSTEM,
                     max_tokens=400,
